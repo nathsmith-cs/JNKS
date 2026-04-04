@@ -1,36 +1,84 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# JNKS
+
+AI-powered basketball shooting form analyzer. Record your three-point shot via webcam or upload a video, and get instant feedback on your technique.
+
+## How It Works
+
+1. **Record** your shot using a webcam or upload a video file
+2. **Analyze** your form with computer vision and pose estimation
+3. **Get feedback** with scores and tips to improve your shot
+
+## Tech Stack
+
+**Frontend**
+- Next.js 16 (React 19) with TypeScript
+- Tailwind CSS 4
+- Three.js / React Three Fiber (3D basketball model)
+- Framer Motion, GSAP, Anime.js (animations)
+- shadcn/ui components
+
+**Computer Vision Pipeline**
+- MediaPipe (pose landmark detection, 33-point skeleton tracking)
+- YOLOv8 / Ultralytics (basketball detection with custom-trained model)
+- OpenCV (video capture and frame processing)
+- NumPy
+
+## Project Structure
+
+```
+src/
+  app/             # Next.js pages (landing, analyze, results)
+  components/
+    3d/            # Three.js basketball model and scene
+    analyze/       # Webcam feed, video upload, analyze button
+    landing/       # Hero section, features, how-it-works
+    results/       # Score display, breakdown, tips
+    layout/        # Navbar, theme provider, animated background
+    ui/            # Reusable UI components (buttons, cards, etc.)
+  lib/             # Utilities and mock data
+  types/           # TypeScript interfaces
+
+pipeline/          # Python CV pipeline
+  detector.py      # Ball detection and tracking (YOLOv8)
+  tracker.py       # Pose estimation (MediaPipe)
+  storage.py       # Session recording (JSON output)
+  models/          # Pre-trained model weights
+
+capture.py         # CLI tool for real-time shot capture
+visualize.py       # CLI tool for visualization and batch processing
+```
 
 ## Getting Started
 
-First, run the development server:
+### Frontend
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Python Pipeline
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+pip install -r requirements.txt
 
-## Learn More
+# Webcam capture
+python capture.py
 
-To learn more about Next.js, take a look at the following resources:
+# Process a video file
+python capture.py --video path/to/video.mp4
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Visualize with pose overlay
+python visualize.py --video path/to/video.mp4
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scoring Categories
 
-## Deploy on Vercel
+- **Elbow Angle** - Alignment of your shooting arm
+- **Follow-Through** - Extension and wrist snap after release
+- **Release Point** - Height and timing of the ball release
+- **Stance** - Foot positioning and balance
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Each category is scored 0-100 and combined into an overall score with actionable tips targeting your weakest area.
