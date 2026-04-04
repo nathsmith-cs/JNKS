@@ -3,12 +3,14 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { BorderBeam } from "@/components/ui/border-beam";
+import { useAccentColor } from "@/components/accent-color-provider";
 
 interface WebcamFeedProps {
   onReady: (ready: boolean) => void;
 }
 
 export function WebcamFeed({ onReady }: WebcamFeedProps) {
+  const { accent } = useAccentColor();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,8 +60,8 @@ export function WebcamFeed({ onReady }: WebcamFeedProps) {
             <BorderBeam
               size={120}
               duration={8}
-              colorFrom="#f97316"
-              colorTo="#ea580c"
+              colorFrom={accent.hex}
+              colorTo={accent.hexDark}
               borderWidth={2}
             />
           </>

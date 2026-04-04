@@ -9,7 +9,7 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-marmelad);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,6 +48,19 @@
   --radius-4xl: calc(var(--radius) * 2.6);
   --animate-shimmer-slide: shimmer-slide var(--speed) ease-in-out infinite alternate;
   --animate-spin-around: spin-around calc(var(--speed) * 2) infinite linear;
+  --animate-splash-logo: splash-logo 1s 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  @keyframes splash-logo {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+    filter: blur(6px);
+    }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+    }
+  }
   @keyframes shimmer-slide {
   to {
     transform: translate(calc(100cqw - 100%), 0);

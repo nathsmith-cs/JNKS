@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import GlassSurface from "@/components/ui/glass-surface";
+import { AccentColorSelector } from "@/components/ui/accent-color-selector";
 
 export function Navbar() {
   const pathname = usePathname();
@@ -47,6 +48,7 @@ export function Navbar() {
             >
               Analyze
             </Link>
+            <AccentColorSelector />
           </div>
         </nav>
       </GlassSurface>

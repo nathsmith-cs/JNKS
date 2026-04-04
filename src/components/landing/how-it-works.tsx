@@ -3,6 +3,7 @@
 import { MagicCard } from "@/components/ui/magic-card";
 import { BlurFade } from "@/components/ui/blur-fade";
 import { TextAnimate } from "@/components/ui/text-animate";
+import { useAccentColor } from "@/components/accent-color-provider";
 
 const steps = [
   {
@@ -45,6 +46,8 @@ const steps = [
 ];
 
 export function HowItWorks() {
+  const { accent } = useAccentColor();
+
   return (
     <section className="py-20">
       <div className="mx-auto max-w-5xl px-6 space-y-12">
@@ -64,9 +67,9 @@ export function HowItWorks() {
             <BlurFade key={step.number} delay={0.1 * i} inView>
               <MagicCard
                 className="h-full cursor-default"
-                gradientColor="rgba(249, 115, 22, 0.08)"
-                gradientFrom="#f97316"
-                gradientTo="#ea580c"
+                gradientColor={`rgba(${accent.rgb}, 0.08)`}
+                gradientFrom={accent.hex}
+                gradientTo={accent.hexDark}
               >
                 <div className="p-6 text-center space-y-4">
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">

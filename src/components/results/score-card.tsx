@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { MagicCard } from "@/components/ui/magic-card";
 import { NumberTicker } from "@/components/ui/number-ticker";
+import { useAccentColor } from "@/components/accent-color-provider";
 import type { CategoryScore } from "@/types/analysis";
 
 interface ScoreCardProps {
@@ -22,12 +23,14 @@ const badgeVariant: Record<
 };
 
 export function ScoreCard({ category, delay }: ScoreCardProps) {
+  const { accent } = useAccentColor();
+
   return (
     <MagicCard
       className="cursor-default"
-      gradientColor="rgba(249, 115, 22, 0.06)"
-      gradientFrom="#f97316"
-      gradientTo="#ea580c"
+      gradientColor={`rgba(${accent.rgb}, 0.06)`}
+      gradientFrom={accent.hex}
+      gradientTo={accent.hexDark}
     >
       <div className="p-5 space-y-3">
         <div className="flex items-center justify-between">

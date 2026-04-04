@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Marmelad } from "next/font/google";
 import { Navbar } from "@/components/layout/navbar";
 import { ThemeProvider } from "@/components/layout/theme-provider";
+import { AccentColorProvider } from "@/components/accent-color-provider";
 import { AnimatedBackground } from "@/components/layout/animated-background";
+import { SplashScreen } from "@/components/layout/splash-screen";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,6 +14,12 @@ const geistSans = Geist({
 
 const geistMono = Geist_Mono({
   variable: "--font-mono",
+  subsets: ["latin"],
+});
+
+const marmelad = Marmelad({
+  variable: "--font-marmelad",
+  weight: "400",
   subsets: ["latin"],
 });
 
@@ -29,14 +37,18 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} dark h-full antialiased font-sans`}
+      className={`${geistSans.variable} ${geistMono.variable} ${marmelad.variable} dark h-full antialiased font-sans`}
       suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
         <ThemeProvider>
-          <AnimatedBackground />
-          <Navbar />
-          <main className="relative z-10 flex-1">{children}</main>
+          <AccentColorProvider>
+            <SplashScreen>
+              <AnimatedBackground />
+              <Navbar />
+              <main className="relative z-10 flex-1">{children}</main>
+            </SplashScreen>
+          </AccentColorProvider>
         </ThemeProvider>
       </body>
     </html>

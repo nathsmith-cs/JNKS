@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { MagicCard } from "@/components/ui/magic-card";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import { useAccentColor } from "@/components/accent-color-provider";
 import type { CategoryScore } from "@/types/analysis";
 
 interface TipsSectionProps {
@@ -10,6 +11,7 @@ interface TipsSectionProps {
 }
 
 export function TipsSection({ categories }: TipsSectionProps) {
+  const { accent } = useAccentColor();
   const focus = categories.reduce((low, cat) =>
     cat.score < low.score ? cat : low
   );
@@ -18,9 +20,9 @@ export function TipsSection({ categories }: TipsSectionProps) {
     <div className="space-y-6">
       <MagicCard
         className="cursor-default"
-        gradientColor="rgba(249, 115, 22, 0.1)"
-        gradientFrom="#f97316"
-        gradientTo="#ea580c"
+        gradientColor={`rgba(${accent.rgb}, 0.1)`}
+        gradientFrom={accent.hex}
+        gradientTo={accent.hexDark}
       >
         <div className="p-5 space-y-2">
           <h3 className="font-semibold text-primary">
@@ -35,9 +37,9 @@ export function TipsSection({ categories }: TipsSectionProps) {
       <div className="flex justify-center">
         <Link href="/analyze">
           <ShimmerButton
-            shimmerColor="#f97316"
+            shimmerColor={accent.hex}
             shimmerSize="0.08em"
-            background="rgba(234, 88, 12, 0.85)"
+            background={`rgba(${accent.rgbDark}, 0.85)`}
             borderRadius="12px"
             className="px-8 py-3 text-sm font-semibold"
           >
