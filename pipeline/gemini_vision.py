@@ -111,12 +111,14 @@ def analyze_clip_with_gemini(video_path: str, metrics: dict) -> str:
             },
         )
 
-    # Wait for Gemini to finish processing the file
+    # Wait for Gemini to finish processing the file (exponential backoff)
     state = getattr(uploaded.state, "value", uploaded.state)
+    poll_wait = 0.5
     while state != "ACTIVE":
         if state == "FAILED":
             raise RuntimeError(f"Gemini file processing failed: {uploaded.error}")
-        time.sleep(2)
+        time.sleep(poll_wait)
+        poll_wait = min(poll_wait * 1.5, 3.0)
         uploaded = client.files.get(name=uploaded.name)
         state = getattr(uploaded.state, "value", uploaded.state)
 
