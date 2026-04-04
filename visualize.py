@@ -8,7 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 
+import json
+
 from pipeline import PoseTracker, LANDMARK_NAMES, BallDetector, BallTracker
+from pipeline.phases import detect_phases, compute_angle_sequence
 
 # Skeleton connections between tracked landmarks (by name)
 SKELETON = [
@@ -249,8 +252,11 @@ def run():
             new_batch()
         shot_count += 1
         frames_to_save = shot_buffer
+        landmarks_to_save = landmark_buffer
         shot_buffer = []
+        landmark_buffer = []
         clip_path = os.path.join(out_dir, f"shot_{shot_count:03d}.mp4")
+        data_path = os.path.join(out_dir, f"shot_{shot_count:03d}.json")
         frame_count = len(frames_to_save)
         clips_saved += 1
         batch_shots += 1
@@ -258,6 +264,17 @@ def run():
 
         def _save():
             save_clip(frames_to_save, clip_path, video_fps or 30)
+            # Compute and save analysis data
+            phases = detect_phases(landmarks_to_save)
+            angles = compute_angle_sequence(landmarks_to_save)
+            shot_data = {
+                "frames": frame_count,
+                "phases": phases,
+                "angles": angles,
+                "landmarks": landmarks_to_save,
+            }
+            with open(data_path, "w") as f:
+                json.dump(shot_data, f)
             print(f"\nSaved {clip_path} ({frame_count} frames)  |  batch: {batch_shots}/{SHOTS_PER_BATCH}")
             if do_supercut:
                 with save_lock:
@@ -265,7 +282,6 @@ def run():
                     print(f"Batch complete! {out_dir}/")
 
         threading.Thread(target=_save, daemon=True).start()
-        landmark_buffer = []
         if do_supercut:
             batch_shots = 0
 
