@@ -4,7 +4,7 @@ import { useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 
 interface VideoUploadProps {
-  onReady: (ready: boolean) => void;
+  onReady: (ready: boolean, file?: File | null) => void;
 }
 
 export function VideoUpload({ onReady }: VideoUploadProps) {
@@ -19,7 +19,7 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
       const url = URL.createObjectURL(file);
       setPreview(url);
       setFileName(file.name);
-      onReady(true);
+      onReady(true, file);
     },
     [onReady]
   );
@@ -38,7 +38,7 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     setFileName(null);
-    onReady(false);
+    onReady(false, null);
     if (inputRef.current) inputRef.current.value = "";
   };
 

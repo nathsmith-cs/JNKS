@@ -197,16 +197,84 @@ def _resample(seq, n):
     return [seq[min(int(i * step), len(seq) - 1)] for i in range(n)]
 
 
+# MediaPipe index -> name mapping (same as tracker.py)
+_INDEX_TO_NAME = {
+    11: "left_shoulder",
+    12: "right_shoulder",
+    13: "left_elbow",
+    14: "right_elbow",
+    15: "left_wrist",
+    16: "right_wrist",
+    19: "left_index",
+    20: "right_index",
+    23: "left_hip",
+    24: "right_hip",
+    25: "left_knee",
+    26: "right_knee",
+    27: "left_ankle",
+    28: "right_ankle",
+    29: "left_heel",
+    30: "right_heel",
+    31: "left_foot_index",
+    32: "right_foot_index",
+}
+
+
+def _convert_ref_frame(landmarks_array):
+    """Convert a 33-element landmark array (by index) to our named dict format."""
+    named = {}
+    for idx, name in _INDEX_TO_NAME.items():
+        if idx < len(landmarks_array):
+            lm = landmarks_array[idx]
+            named[name] = {
+                "x": lm["x"],
+                "y": lm["y"],
+                "z": lm["z"],
+                "visibility": lm.get("visibility", 1.0),
+            }
+    return named
+
+
+def _load_single_ref(path):
+    """Load a reference JSON, handling both pipeline and external formats.
+
+    Pipeline format: {"landmarks": [{name: {x,y,z,vis}}, ...]}
+    External format: {"frames": [{"landmarks": [{x,y,z,vis,...}, ...]}, ...]}
+    """
+    with open(path) as f:
+        data = json.load(f)
+
+    # Pipeline format — landmarks is a list of named dicts
+    landmarks = data.get("landmarks")
+    if landmarks and isinstance(landmarks, list) and isinstance(landmarks[0], dict):
+        first = landmarks[0]
+        if any(k in first for k in ["left_shoulder", "right_shoulder"]):
+            return landmarks
+
+    # External format — frames[].landmarks[] as 33-element arrays
+    frames = data.get("frames")
+    if frames and isinstance(frames, list):
+        converted = []
+        for frame in frames:
+            lm_array = frame.get("landmarks")
+            if lm_array and isinstance(lm_array, list):
+                converted.append(_convert_ref_frame(lm_array))
+            else:
+                converted.append(None)
+        return converted if any(c is not None for c in converted) else None
+
+    return None
+
+
 def load_reference_shots(ref_dir):
     """Load all shot JSON files from a reference directory.
 
     Returns list of (filename, landmarks) tuples.
+    Handles both pipeline output format and external MediaPipe format.
     """
     shots = []
     for path in sorted(glob.glob(os.path.join(ref_dir, "*.json"))):
-        with open(path) as f:
-            data = json.load(f)
-        landmarks = data.get("landmarks")
+        landmarks = _load_single_ref(path)
         if landmarks:
             shots.append((os.path.basename(path), landmarks))
     return shots

@@ -23,7 +23,6 @@
 # misc
 .DS_Store
 *.pem
-*.json
 
 # debug
 npm-debug.log*
@@ -48,3 +47,4 @@ __pycache__/
 output/
 *.task
 *.pt
+pipeline/latest_results.json

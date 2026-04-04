@@ -7,11 +7,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-
 import json
 
-from pipeline import PoseTracker, LANDMARK_NAMES, BallDetector, BallTracker
+from pipeline.tracker import PoseTracker, LANDMARK_NAMES
+from pipeline.detector import BallDetector, BallTracker
 from pipeline.phases import detect_phases, compute_angle_sequence
+from pipeline.compare import find_best_match
 
 # Skeleton connections between tracked landmarks (by name)
 SKELETON = [
@@ -125,10 +126,13 @@ def is_shot_motion(landmark_buffer):
 
 
 def run():
-    parser = argparse.ArgumentParser(description="Basketball pose visualizer")
+    parser = argparse.ArgumentParser(description="Basketball shot processor")
     parser.add_argument("--video", type=str, default=None,
                         help="Path to a video file (omit to use webcam)")
+    parser.add_argument("--reference", type=str, default=None,
+                        help="Path to reference shots folder (e.g. pipeline/reference/StephCurryShots)")
     args = parser.parse_args()
+    ref_dir = args.reference
 
     source = args.video if args.video else 0
     is_live = not args.video
@@ -242,6 +246,35 @@ def run():
 
     save_lock = threading.Lock()
 
+    def _print_batch_report():
+        """Print summary of all shots in the current batch."""
+        import glob as g
+        json_files = sorted(g.glob(os.path.join(out_dir, "shot_*.json")))
+        if not json_files:
+            return
+        print(f"\n{'='*60}")
+        print(f"BATCH REPORT — {out_dir}")
+        print(f"{'='*60}")
+        scores = []
+        for jf in json_files:
+            with open(jf) as f:
+                data = json.load(f)
+            name = os.path.basename(jf).replace(".json", "")
+            comp = data.get("comparison")
+            if comp:
+                scores.append(comp["score"])
+                print(f"  {name}: {comp['score']}% similar to {comp['best_ref']}")
+                for phase, s in comp["phase_scores"].items():
+                    print(f"    {phase}: {s}%")
+            else:
+                print(f"  {name}: no comparison data")
+        if scores:
+            avg = sum(scores) / len(scores)
+            print(f"\n  Average similarity: {avg:.1f}%")
+            print(f"  Best shot: {max(scores):.1f}%")
+            print(f"  Worst shot: {min(scores):.1f}%")
+        print(f"{'='*60}\n")
+
     def flush_shot():
         nonlocal shot_buffer, landmark_buffer, shot_count, clips_saved, batch_shots
         if len(shot_buffer) < MIN_SHOT_FRAMES or not is_shot_motion(landmark_buffer):
@@ -250,13 +283,15 @@ def run():
             return
         if is_live and batch_shots == 0:
             new_batch()
+        from datetime import datetime
         shot_count += 1
         frames_to_save = shot_buffer
         landmarks_to_save = landmark_buffer
         shot_buffer = []
         landmark_buffer = []
-        clip_path = os.path.join(out_dir, f"shot_{shot_count:03d}.mp4")
-        data_path = os.path.join(out_dir, f"shot_{shot_count:03d}.json")
+        ts = datetime.now().strftime("%H-%M-%S")
+        clip_path = os.path.join(out_dir, f"shot_{ts}.mp4")
+        data_path = os.path.join(out_dir, f"shot_{ts}.json")
         frame_count = len(frames_to_save)
         clips_saved += 1
         batch_shots += 1
@@ -273,13 +308,28 @@ def run():
                 "angles": angles,
                 "landmarks": landmarks_to_save,
             }
+            # Run comparison against reference if provided
+            if ref_dir:
+                match = find_best_match(landmarks_to_save, ref_dir)
+                if match:
+                    shot_data["comparison"] = {
+                        "best_ref": match["best_ref"],
+                        "score": match["best_score"],
+                        "phase_scores": match["analysis"]["phase_scores"],
+                        "angle_diffs": match["analysis"]["angle_diffs"],
+                        "all_scores": match["all_scores"],
+                    }
             with open(data_path, "w") as f:
                 json.dump(shot_data, f)
-            print(f"\nSaved {clip_path} ({frame_count} frames)  |  batch: {batch_shots}/{SHOTS_PER_BATCH}")
+            score_str = ""
+            if ref_dir and shot_data.get("comparison"):
+                c = shot_data["comparison"]
+                score_str = f"  |  similarity: {c['score']}% (vs {c['best_ref']})"
+            print(f"\nSaved {clip_path} ({frame_count} frames)  |  batch: {batch_shots}/{SHOTS_PER_BATCH}{score_str}")
             if do_supercut:
                 with save_lock:
                     build_supercut()
-                    print(f"Batch complete! {out_dir}/")
+                    _print_batch_report()
 
         threading.Thread(target=_save, daemon=True).start()
         if do_supercut:
@@ -396,12 +446,18 @@ def run():
     # Wait for background saves to finish
     with save_lock:
         pass
+    # Small delay to let final save threads complete
+    time.sleep(0.5)
 
     # Build final supercut for incomplete live batch or video files
     if batch_shots > 0 and is_live:
         build_supercut()
+        if ref_dir:
+            _print_batch_report()
     elif not is_live and clips_saved > 0:
         build_supercut()
+        if ref_dir:
+            _print_batch_report()
 
     total_wall = time.monotonic() - start_time
     total_video = frame_number / (video_fps or 30) if frame_number else 0
