@@ -8,6 +8,7 @@ import { BlurFade } from "@/components/ui/blur-fade";
 import { OverallScore } from "@/components/results/overall-score";
 import { ScoreBreakdown } from "@/components/results/score-breakdown";
 import { TipsSection } from "@/components/results/tips-section";
+import { VoiceCoach } from "@/components/analyze/voice-coach";
 import type { AnalysisResult } from "@/types/analysis";
 
 export default function ResultsPage() {
@@ -56,6 +57,20 @@ export default function ResultsPage() {
         </div>
       </BlurFade>
 
+      {result.coaching && (
+        <>
+          <Separator className="opacity-30" />
+          <BlurFade delay={0.35} inView>
+            <div className="rounded-xl border border-border bg-muted/30 p-5 space-y-2">
+              <h2 className="text-lg font-semibold">Coach&apos;s Advice</h2>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {result.coaching}
+              </p>
+            </div>
+          </BlurFade>
+        </>
+      )}
+
       <Separator className="opacity-30" />
 
       <div className="space-y-4">
@@ -77,6 +92,55 @@ export default function ResultsPage() {
       <BlurFade delay={0.2} inView>
         <TipsSection categories={result.categories} />
       </BlurFade>
+
+      {result.worstJoints && result.worstJoints.length > 0 && (
+        <>
+          <Separator className="opacity-30" />
+          <div className="space-y-4">
+            <TextAnimate
+              as="h2"
+              by="word"
+              animation="blurInUp"
+              startOnView
+              once
+              className="text-xl font-semibold"
+            >
+              Joints to Focus On
+            </TextAnimate>
+            <BlurFade delay={0.3} inView>
+              <div className="space-y-3">
+                {result.worstJoints.map((joint) => (
+                  <div
+                    key={joint.joint}
+                    className="flex items-center justify-between rounded-lg border border-border p-3"
+                  >
+                    <span className="text-sm font-medium capitalize">
+                      {joint.joint.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      {joint.avg_diff_degrees}° off
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </BlurFade>
+          </div>
+        </>
+      )}
+
+      <Separator className="opacity-30" />
+
+      <BlurFade delay={0.5} inView>
+        <VoiceCoach enabled={true} />
+      </BlurFade>
+
+      {result.shotCount !== undefined && (
+        <BlurFade delay={0.6} inView>
+          <p className="text-center text-xs text-muted-foreground">
+            Based on {result.shotCount} detected shot{result.shotCount !== 1 ? "s" : ""}
+          </p>
+        </BlurFade>
+      )}
     </div>
   );
 }

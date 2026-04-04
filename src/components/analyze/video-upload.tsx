@@ -23,7 +23,7 @@ export function VideoUpload({ onReady, onFileSelected }: VideoUploadProps) {
       onFileSelected(file);
       onReady(true);
     },
-    [onReady]
+    [onReady, onFileSelected]
   );
 
   const handleDrop = useCallback(

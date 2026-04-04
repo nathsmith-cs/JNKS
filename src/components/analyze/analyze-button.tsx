@@ -3,41 +3,63 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { analyzeVideo } from "@/lib/api";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface AnalyzeButtonProps {
   disabled: boolean;
   inputType: "webcam" | "upload";
-  getVideoBlob: () => Blob | null;
+  videoFile?: File | null;
 }
 
-export function AnalyzeButton({
-  disabled,
-  inputType,
-  getVideoBlob,
-}: AnalyzeButtonProps) {
+export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonProps) {
   const router = useRouter();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
     setError(null);
-    const blob = getVideoBlob();
-    if (!blob) {
-      setError("No video to analyze. Please record or upload a video first.");
-      return;
-    }
-
     setIsAnalyzing(true);
+    setStatus("Uploading video...");
+
     try {
-      const result = await analyzeVideo(blob, inputType);
+      let file: File;
+
+      if (inputType === "upload" && videoFile) {
+        file = videoFile;
+      } else {
+        setError("No video available. Please upload a video first.");
+        setIsAnalyzing(false);
+        setStatus("");
+        return;
+      }
+
+      setStatus("Analyzing your form...");
+
+      const formData = new FormData();
+      formData.append("video", file);
+
+      const res = await fetch(
+        `${API_URL}/api/analyze?reference=StephCurryShots&input_type=${inputType}`,
+        { method: "POST", body: formData }
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Analysis failed");
+      }
+
+      const result = await res.json();
       sessionStorage.setItem("analysisResult", JSON.stringify(result));
       router.push("/results");
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Something went wrong."
-      );
-      setIsAnalyzing(false);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setStatus("");
+      setTimeout(() => {
+        setIsAnalyzing(false);
+        setError(null);
+      }, 3000);
     }
   };
 
@@ -71,7 +93,7 @@ export function AnalyzeButton({
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
               />
             </svg>
-            Analyzing your form...
+            {status || "Analyzing..."}
           </span>
         ) : (
           "Analyze My Form"
@@ -79,7 +101,7 @@ export function AnalyzeButton({
       </Button>
       {isAnalyzing && (
         <p className="text-xs text-muted-foreground animate-pulse">
-          Comparing your shot to ideal form...
+          Comparing your shot to Steph Curry&apos;s form...
         </p>
       )}
       {error && (

@@ -5,29 +5,125 @@ import { Button } from "@/components/ui/button";
 import { BorderBeam } from "@/components/ui/border-beam";
 import { useAccentColor } from "@/components/accent-color-provider";
 
-interface WebcamFeedProps {
-  onReady: (ready: boolean) => void;
-  onRecorded: (blob: Blob | null) => void;
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+
+interface ShotEvent {
+  type: "shot_detected";
+  shot_number: number;
+  score: number;
+  best_ref: string;
+  shots_in_batch: number;
+  shots_needed: number;
 }
 
-export function WebcamFeed({ onReady, onRecorded }: WebcamFeedProps) {
+interface BatchEvent {
+  type: "batch_complete";
+  result: Record<string, unknown> & { audio?: string };
+}
+
+interface StatusEvent {
+  type: "status";
+  frame: number;
+  tracking: boolean;
+  shots_in_batch: number;
+}
+
+type ServerMessage = ShotEvent | BatchEvent | StatusEvent;
+
+interface WebcamFeedProps {
+  onReady: (ready: boolean) => void;
+  onShotDetected?: (event: ShotEvent) => void;
+  onBatchComplete?: (result: Record<string, unknown>) => void;
+}
+
+function playAudio(b64Audio: string) {
+  // Decode base64 PCM to WAV and play
+  const pcm = Uint8Array.from(atob(b64Audio), (c) => c.charCodeAt(0));
+  const sampleRate = 24000;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = pcm.length;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  // WAV header
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+  new Uint8Array(buffer, 44).set(pcm);
+
+  const blob = new Blob([buffer], { type: "audio/wav" });
+  const audio = new Audio(URL.createObjectURL(blob));
+  audio.play().catch((e) => console.warn("Audio play failed:", e));
+}
+
+export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamFeedProps) {
   const { accent } = useAccentColor();
   const videoRef = useRef<HTMLVideoElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const streamingRef = useRef(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [hasRecording, setHasRecording] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [tracking, setTracking] = useState(false);
+  const [shotsInBatch, setShotsInBatch] = useState(0);
+  const [lastScore, setLastScore] = useState<number | null>(null);
+
+  const sendFrames = useCallback(() => {
+    if (!streamingRef.current || !videoRef.current || !canvasRef.current || !wsRef.current) return;
+    if (wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx || video.videoWidth === 0) {
+      requestAnimationFrame(sendFrames);
+      return;
+    }
+
+    canvas.width = 640;
+    canvas.height = Math.round(video.videoHeight * (640 / video.videoWidth));
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(
+      (blob) => {
+        if (blob && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          blob.arrayBuffer().then((buf) => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(buf);
+            }
+          });
+        }
+        if (streamingRef.current) {
+          requestAnimationFrame(sendFrames);
+        }
+      },
+      "image/jpeg",
+      0.7
+    );
+  }, []);
 
   const startCamera = useCallback(async () => {
     try {
       setError(null);
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
       setStream(mediaStream);
@@ -39,71 +135,64 @@ export function WebcamFeed({ onReady, onRecorded }: WebcamFeedProps) {
     }
   }, []);
 
-  const startRecording = useCallback(() => {
-    if (!stream) return;
+  const startStreaming = useCallback(() => {
+    const ws = new WebSocket(`${WS_URL}/ws/analyze`);
+    ws.binaryType = "arraybuffer";
 
-    chunksRef.current = [];
-    setHasRecording(false);
-    onRecorded(null);
-    onReady(false);
-
-    // Pick a MIME type the browser supports
-    const mimeType = ["video/webm;codecs=vp9", "video/webm", "video/mp4"].find(
-      (t) => MediaRecorder.isTypeSupported(t)
-    );
-
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
-    mediaRecorderRef.current = recorder;
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
+    ws.onopen = () => {
+      wsRef.current = ws;
+      streamingRef.current = true;
+      setIsStreaming(true);
+      requestAnimationFrame(sendFrames);
     };
 
-    recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, {
-        type: mimeType || "video/webm",
-      });
-      onRecorded(blob);
-      onReady(true);
-      setHasRecording(true);
+    ws.onmessage = (event) => {
+      const msg: ServerMessage = JSON.parse(event.data);
+      if (msg.type === "shot_detected") {
+        setShotsInBatch(msg.shots_in_batch);
+        setLastScore(msg.score);
+        onShotDetected?.(msg);
+      } else if (msg.type === "batch_complete") {
+        setShotsInBatch(0);
+        setLastScore(null);
+        // Play coaching audio if available
+        if (msg.result.audio) {
+          playAudio(msg.result.audio as string);
+        }
+        onBatchComplete?.(msg.result);
+      } else if (msg.type === "status") {
+        setTracking(msg.tracking);
+        setShotsInBatch(msg.shots_in_batch);
+      }
     };
 
-    recorder.start();
-    setIsRecording(true);
-    setElapsed(0);
+    ws.onclose = () => {
+      streamingRef.current = false;
+      setIsStreaming(false);
+      wsRef.current = null;
+    };
 
-    timerRef.current = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
-  }, [stream, onRecorded, onReady]);
+    ws.onerror = () => {
+      setError("Connection to server lost. Is the backend running?");
+      streamingRef.current = false;
+      setIsStreaming(false);
+    };
+  }, [sendFrames, onShotDetected, onBatchComplete]);
 
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === "recording") {
-      mediaRecorderRef.current.stop();
-    }
-    setIsRecording(false);
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+  const stopStreaming = useCallback(() => {
+    streamingRef.current = false;
+    setIsStreaming(false);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
   }, []);
 
-  const reRecord = useCallback(() => {
-    setHasRecording(false);
-    onRecorded(null);
-    onReady(false);
-    startRecording();
-  }, [startRecording, onRecorded, onReady]);
-
-  // Clean up on unmount
   useEffect(() => {
     return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      streamingRef.current = false;
+      if (wsRef.current) wsRef.current.close();
+      if (stream) stream.getTracks().forEach((track) => track.stop());
     };
   }, [stream]);
 
@@ -125,20 +214,17 @@ export function WebcamFeed({ onReady, onRecorded }: WebcamFeedProps) {
               muted
               className="h-full w-full object-cover"
             />
-            {/* Status badge: top-left */}
+            <canvas ref={canvasRef} className="hidden" />
             <div className="absolute top-4 left-4 flex items-center gap-2 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm">
-              {isRecording ? (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                  Recording {formatTime(elapsed)}
-                </>
-              ) : (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Live
-                </>
-              )}
+              <span className={`h-2 w-2 rounded-full ${tracking ? "bg-red-500" : isStreaming ? "bg-emerald-500" : "bg-yellow-500"} animate-pulse`} />
+              {tracking ? "Tracking Shot" : isStreaming ? "Analyzing" : "Camera Ready"}
             </div>
+            {shotsInBatch > 0 && (
+              <div className="absolute top-4 right-4 rounded-full bg-black/60 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm">
+                Shots: {shotsInBatch}/5
+                {lastScore !== null && ` | Last: ${lastScore.toFixed(0)}%`}
+              </div>
+            )}
             <BorderBeam
               size={120}
               duration={8}
@@ -174,19 +260,12 @@ export function WebcamFeed({ onReady, onRecorded }: WebcamFeedProps) {
         )}
       </div>
 
-      {/* Recording controls — only show after camera is on */}
       {stream && (
-        <div className="flex justify-center gap-3">
-          {isRecording ? (
-            <Button variant="destructive" onClick={stopRecording}>
-              Stop Recording
-            </Button>
-          ) : hasRecording ? (
-            <Button variant="outline" onClick={reRecord}>
-              Re-record
-            </Button>
+        <div className="flex justify-center">
+          {!isStreaming ? (
+            <Button onClick={startStreaming}>Start Analysis</Button>
           ) : (
-            <Button onClick={startRecording}>Record</Button>
+            <Button onClick={stopStreaming} variant="destructive">Stop Analysis</Button>
           )}
         </div>
       )}
