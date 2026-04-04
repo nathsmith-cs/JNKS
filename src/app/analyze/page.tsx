@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TextAnimate } from "@/components/ui/text-animate";
 import { BlurFade } from "@/components/ui/blur-fade";
@@ -12,6 +12,13 @@ export default function AnalyzePage() {
   const [webcamReady, setWebcamReady] = useState(false);
   const [uploadReady, setUploadReady] = useState(false);
   const [activeTab, setActiveTab] = useState("webcam");
+
+  // Store the video data from each input method
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+
+  const getWebcamBlob = useCallback(() => recordedBlob, [recordedBlob]);
+  const getUploadBlob = useCallback(() => uploadFile, [uploadFile]);
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 space-y-8">
@@ -41,13 +48,27 @@ export default function AnalyzePage() {
           </TabsList>
 
           <TabsContent value="webcam" className="space-y-6">
-            <WebcamFeed onReady={setWebcamReady} />
-            <AnalyzeButton disabled={!webcamReady} inputType="webcam" />
+            <WebcamFeed
+              onReady={setWebcamReady}
+              onRecorded={setRecordedBlob}
+            />
+            <AnalyzeButton
+              disabled={!webcamReady}
+              inputType="webcam"
+              getVideoBlob={getWebcamBlob}
+            />
           </TabsContent>
 
           <TabsContent value="upload" className="space-y-6">
-            <VideoUpload onReady={setUploadReady} />
-            <AnalyzeButton disabled={!uploadReady} inputType="upload" />
+            <VideoUpload
+              onReady={setUploadReady}
+              onFileSelected={setUploadFile}
+            />
+            <AnalyzeButton
+              disabled={!uploadReady}
+              inputType="upload"
+              getVideoBlob={getUploadBlob}
+            />
           </TabsContent>
         </Tabs>
       </BlurFade>

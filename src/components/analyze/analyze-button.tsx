@@ -3,25 +3,42 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { generateMockAnalysis } from "@/lib/mock-data";
+import { analyzeVideo } from "@/lib/api";
 
 interface AnalyzeButtonProps {
   disabled: boolean;
   inputType: "webcam" | "upload";
+  getVideoBlob: () => Blob | null;
 }
 
-export function AnalyzeButton({ disabled, inputType }: AnalyzeButtonProps) {
+export function AnalyzeButton({
+  disabled,
+  inputType,
+  getVideoBlob,
+}: AnalyzeButtonProps) {
   const router = useRouter();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
+    setError(null);
+    const blob = getVideoBlob();
+    if (!blob) {
+      setError("No video to analyze. Please record or upload a video first.");
+      return;
+    }
+
     setIsAnalyzing(true);
-
-    setTimeout(() => {
-      const result = generateMockAnalysis(inputType);
+    try {
+      const result = await analyzeVideo(blob, inputType);
       sessionStorage.setItem("analysisResult", JSON.stringify(result));
       router.push("/results");
-    }, 2500);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Something went wrong."
+      );
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -64,6 +81,9 @@ export function AnalyzeButton({ disabled, inputType }: AnalyzeButtonProps) {
         <p className="text-xs text-muted-foreground animate-pulse">
           Comparing your shot to ideal form...
         </p>
+      )}
+      {error && (
+        <p className="text-sm text-destructive text-center">{error}</p>
       )}
     </div>
   );
