@@ -5,9 +5,10 @@ import { Button } from "@/components/ui/button";
 
 interface VideoUploadProps {
   onReady: (ready: boolean) => void;
+  onFileSelected: (file: File | null) => void;
 }
 
-export function VideoUpload({ onReady }: VideoUploadProps) {
+export function VideoUpload({ onReady, onFileSelected }: VideoUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -19,6 +20,7 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
       const url = URL.createObjectURL(file);
       setPreview(url);
       setFileName(file.name);
+      onFileSelected(file);
       onReady(true);
     },
     [onReady]
@@ -38,6 +40,7 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     setFileName(null);
+    onFileSelected(null);
     onReady(false);
     if (inputRef.current) inputRef.current.value = "";
   };

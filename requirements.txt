@@ -2,3 +2,6 @@ mediapipe
 opencv-python
 numpy
 ultralytics
+fastapi
+python-multipart
+uvicorn[standard]
