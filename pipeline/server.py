@@ -22,6 +22,14 @@ from pipeline.phases import detect_phases, compute_angle_sequence
 from pipeline.compare import find_best_match
 from pipeline.llm import analyze_shot_with_gemini, distill_advice, text_to_speech
 from pipeline.voice import create_live_session, send_audio, receive_audio
+from pipeline.video import convert_video, split_video
+from pipeline.pose_extract import extract_keypoints
+from pipeline.gemini_vision import analyze_clip_with_gemini, build_final_analysis
+from pipeline.scoring import (
+    compute_clip_metrics,
+    summarize_session_metrics,
+    build_analysis_result,
+)
 
 app = FastAPI()
 
@@ -425,124 +433,98 @@ async def ws_voice(ws: WebSocket):
 async def analyze_upload(
     video: UploadFile = File(...),
     reference: str = Query(default="StephCurryShots"),
+    input_type: str = Query(default="upload"),
 ):
-    """Upload a video file for analysis. Returns the same result format as the WebSocket path."""
-    ref_path = os.path.join(REF_DIR, reference)
-    if not os.path.isdir(ref_path):
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=400, content={"error": f"Reference '{reference}' not found"})
+    """Upload a video file for analysis.
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+    Uses Gemini vision analysis with hybrid scoring:
+    - Video is converted to mp4, split into clips
+    - Each clip gets MediaPipe pose extraction + Gemini vision analysis
+    - Final scores blend 40% MediaPipe metrics with 60% Gemini vision scores
+    """
+    suffix = os.path.splitext(video.filename or "video.mp4")[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await video.read())
         tmp_path = tmp.name
 
     try:
-        tracker, ball_detector = _get_models()
-        ball_tracker = BallTracker()
-        cap = cv2.VideoCapture(tmp_path)
+        # Pipeline: convert → split → per-clip analysis → final report → score
+        video_path = convert_video(tmp_path)
+        clips = split_video(video_path)
+        max_clip_sec = 5
+        clip_results: list[dict] = []
 
-        frame_number = 0
-        shot_frames_count = 0
-        shot_cooldown = 0
-        ball_boxes = []
-        confirm_frames = 0
-        cooldown_skip = 0
-        ball_lost_frames = 0
-        landmark_buffer = []
-        batch_shots = []
-        shot_advices = []
+        for idx, clip in enumerate(clips):
+            frames = extract_keypoints(clip)
+            metrics = compute_clip_metrics(frames)
+            feedback = analyze_clip_with_gemini(clip, metrics)
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            start_sec = idx * max_clip_sec
+            end_sec = start_sec + max_clip_sec
+            clip_results.append({
+                "clip_index": idx,
+                "clip_path": clip,
+                "time_range": f"{start_sec:.1f}s-{end_sec:.1f}s",
+                "metrics": metrics,
+                "feedback": feedback,
+            })
 
-            run_yolo = False
-            if cooldown_skip > 0:
-                cooldown_skip -= 1
-                ball_boxes = []
-            elif shot_cooldown > 0:
-                ball_boxes = []
-            elif confirm_frames > 0:
-                run_yolo = True
-                confirm_frames -= 1
-            elif shot_frames_count > 0 and frame_number % 10 == 0:
-                run_yolo = True
-            elif shot_frames_count == 0 and frame_number % 5 == 0:
-                run_yolo = True
+        session_metrics = summarize_session_metrics(clip_results)
+        final_text = build_final_analysis(clip_results, session_metrics)
+        result = build_analysis_result(final_text, session_metrics, clip_results, input_type)
 
-            h, w = frame.shape[:2]
-            need_pose = bool(ball_boxes) or shot_cooldown > 0
-
-            if run_yolo:
-                ball_boxes = ball_detector.detect(frame)
-                if not need_pose and ball_boxes:
-                    confirm_frames = 3
-            if need_pose or ball_boxes:
+        # Also run reference comparison if available (for worstJoints data)
+        ref_path = os.path.join(REF_DIR, reference)
+        if os.path.isdir(ref_path):
+            tracker, ball_detector = _get_models()
+            cap = cv2.VideoCapture(video_path)
+            landmark_buffer = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 landmarks = tracker.process(frame)
-            else:
-                landmarks = None
+                if landmarks is not None:
+                    landmark_buffer.append(landmarks)
+            cap.release()
 
-            ball_info = ball_tracker.update(landmarks, ball_boxes, w, h)
+            if landmark_buffer:
+                match = find_best_match(landmark_buffer, ref_path)
+                if match:
+                    angle_diffs = match["analysis"].get("angle_diffs", {})
+                    worst_angles = sorted(angle_diffs.items(), key=lambda x: x[1], reverse=True)
+                    result["worstJoints"] = [
+                        {"joint": k, "avg_diff_degrees": round(v, 1)}
+                        for k, v in worst_angles[:5]
+                    ]
 
-            if ball_info["has_ball"]:
-                shot_frames_count += 1
-                shot_cooldown = 0
-                ball_lost_frames = 0
-            elif shot_frames_count > 0:
-                ball_lost_frames += 1
-                if ball_lost_frames <= BALL_LOST_GRACE:
-                    confirm_frames = max(confirm_frames, 1)
-                else:
-                    if shot_frames_count >= SHOT_MIN_FRAMES:
-                        shot_cooldown = FOLLOW_THROUGH_FRAMES
-                    shot_frames_count = 0
-                    ball_lost_frames = 0
-
-            tracking = ball_info["has_ball"] or shot_frames_count > 0 or shot_cooldown > 0
-
-            if tracking:
-                landmark_buffer.append(landmarks)
-            elif landmark_buffer:
-                if len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-                    analysis = _analyze_shot(landmark_buffer, ref_path)
-                    batch_shots.append(analysis)
-                    comp = analysis.get("comparison")
-                    advice = await analyze_shot_with_gemini(landmark_buffer, comp)
-                    shot_advices.append(advice)
-                landmark_buffer = []
-
-            if shot_cooldown > 0:
-                shot_cooldown -= 1
-                if shot_cooldown == 0:
-                    cooldown_skip = int((cap.get(cv2.CAP_PROP_FPS) or 30) * 3)
-
-            frame_number += 1
-
-        # Flush remaining
-        if landmark_buffer and len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-            analysis = _analyze_shot(landmark_buffer, ref_path)
-            batch_shots.append(analysis)
-            comp = analysis.get("comparison")
-            advice = await analyze_shot_with_gemini(landmark_buffer, comp)
-            shot_advices.append(advice)
-
-        cap.release()
-
-        report = _batch_report(batch_shots)
-        coaching = await distill_advice(shot_advices, report)
-        report["coaching"] = coaching
+        # Distill coaching advice from the Gemini analysis
+        coaching = await distill_advice(
+            [r["feedback"] for r in clip_results],
+            result,
+        )
+        if coaching:
+            result["coaching"] = coaching
 
         global _latest_report
-        _latest_report = report
+        _latest_report = result
 
         results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
         with open(results_path, "w") as f:
-            json.dump(report, f, indent=2)
+            debug_report = {k: v for k, v in result.items() if k != "audio"}
+            json.dump(debug_report, f, indent=2)
 
-        return report
+        return result
+
+    except FileNotFoundError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ValueError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"error": str(e)})
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @app.get("/api/references")
