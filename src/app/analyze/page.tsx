@@ -16,11 +16,6 @@ export default function AnalyzePage() {
   const [activeTab, setActiveTab] = useState("webcam");
   const [videoFile, setVideoFile] = useState<File | null>(null);
 
-  const handleUploadReady = (ready: boolean, file?: File | null) => {
-    setUploadReady(ready);
-    setVideoFile(file ?? null);
-  };
-
   const handleBatchComplete = useCallback(
     (result: Record<string, unknown>) => {
       sessionStorage.setItem("analysisResult", JSON.stringify(result));
@@ -64,7 +59,10 @@ export default function AnalyzePage() {
           </TabsContent>
 
           <TabsContent value="upload" className="space-y-6">
-            <VideoUpload onReady={handleUploadReady} />
+            <VideoUpload
+              onReady={setUploadReady}
+              onFileSelected={setVideoFile}
+            />
             <AnalyzeButton disabled={!uploadReady} inputType="upload" videoFile={videoFile} />
           </TabsContent>
         </Tabs>

@@ -16,8 +16,10 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
   const router = useRouter();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
+    setError(null);
     setIsAnalyzing(true);
     setStatus("Uploading video...");
 
@@ -27,8 +29,9 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
       if (inputType === "upload" && videoFile) {
         file = videoFile;
       } else {
-        setStatus("No video available");
+        setError("No video available. Please upload a video first.");
         setIsAnalyzing(false);
+        setStatus("");
         return;
       }
 
@@ -51,10 +54,11 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
       sessionStorage.setItem("analysisResult", JSON.stringify(result));
       router.push("/results");
     } catch (err) {
-      setStatus(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+      setStatus("");
       setTimeout(() => {
         setIsAnalyzing(false);
-        setStatus("");
+        setError(null);
       }, 3000);
     }
   };
@@ -99,6 +103,9 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
         <p className="text-xs text-muted-foreground animate-pulse">
           Comparing your shot to Steph Curry&apos;s form...
         </p>
+      )}
+      {error && (
+        <p className="text-sm text-destructive text-center">{error}</p>
       )}
     </div>
   );

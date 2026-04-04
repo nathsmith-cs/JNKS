@@ -4,10 +4,11 @@ import { useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 
 interface VideoUploadProps {
-  onReady: (ready: boolean, file?: File | null) => void;
+  onReady: (ready: boolean) => void;
+  onFileSelected: (file: File | null) => void;
 }
 
-export function VideoUpload({ onReady }: VideoUploadProps) {
+export function VideoUpload({ onReady, onFileSelected }: VideoUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -19,9 +20,10 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
       const url = URL.createObjectURL(file);
       setPreview(url);
       setFileName(file.name);
-      onReady(true, file);
+      onFileSelected(file);
+      onReady(true);
     },
-    [onReady]
+    [onReady, onFileSelected]
   );
 
   const handleDrop = useCallback(
@@ -38,7 +40,8 @@ export function VideoUpload({ onReady }: VideoUploadProps) {
     if (preview) URL.revokeObjectURL(preview);
     setPreview(null);
     setFileName(null);
-    onReady(false, null);
+    onFileSelected(null);
+    onReady(false);
     if (inputRef.current) inputRef.current.value = "";
   };
 

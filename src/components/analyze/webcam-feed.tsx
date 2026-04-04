@@ -130,12 +130,10 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
-      onReady(true);
     } catch {
       setError("Could not access camera. Please allow camera permissions.");
-      onReady(false);
     }
-  }, [onReady]);
+  }, []);
 
   const startStreaming = useCallback(() => {
     const ws = new WebSocket(`${WS_URL}/ws/analyze`);
@@ -198,6 +196,12 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
     };
   }, [stream]);
 
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  };
+
   return (
     <div className="space-y-4">
       <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-border/50 bg-muted/20">
@@ -249,7 +253,9 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
             <p className="text-sm text-muted-foreground text-center">
               Click below to start your camera and begin analyzing your shot.
             </p>
-            <Button onClick={startCamera} className="mt-2">Start Camera</Button>
+            <Button onClick={startCamera} className="mt-2">
+              Start Camera
+            </Button>
           </div>
         )}
       </div>
