@@ -17,7 +17,6 @@ export function AnalyzeButton({ disabled, inputType }: AnalyzeButtonProps) {
   const handleAnalyze = () => {
     setIsAnalyzing(true);
 
-    // Simulate analysis time
     setTimeout(() => {
       const result = generateMockAnalysis(inputType);
       sessionStorage.setItem("analysisResult", JSON.stringify(result));
@@ -31,7 +30,7 @@ export function AnalyzeButton({ disabled, inputType }: AnalyzeButtonProps) {
         size="lg"
         onClick={handleAnalyze}
         disabled={disabled || isAnalyzing}
-        className="w-full max-w-xs"
+        className="w-full max-w-xs px-6 py-3 text-sm font-semibold"
       >
         {isAnalyzing ? (
           <span className="flex items-center gap-2">

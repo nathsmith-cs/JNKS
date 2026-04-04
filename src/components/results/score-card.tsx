@@ -1,37 +1,50 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { MagicCard } from "@/components/ui/magic-card";
+import { NumberTicker } from "@/components/ui/number-ticker";
 import type { CategoryScore } from "@/types/analysis";
 
 interface ScoreCardProps {
   category: CategoryScore;
+  delay: number;
 }
 
-const badgeVariant: Record<CategoryScore["label"], "default" | "secondary" | "destructive" | "outline"> = {
+const badgeVariant: Record<
+  CategoryScore["label"],
+  "default" | "secondary" | "destructive" | "outline"
+> = {
   Excellent: "default",
   Good: "secondary",
   "Needs Work": "outline",
   Poor: "destructive",
 };
 
-export function ScoreCard({ category }: ScoreCardProps) {
+export function ScoreCard({ category, delay }: ScoreCardProps) {
   return (
-    <Card>
-      <CardHeader className="pb-2">
+    <MagicCard
+      className="cursor-default"
+      gradientColor="rgba(249, 115, 22, 0.06)"
+      gradientFrom="#f97316"
+      gradientTo="#ea580c"
+    >
+      <div className="p-5 space-y-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">{category.name}</CardTitle>
+          <h3 className="font-semibold">{category.name}</h3>
           <Badge variant={badgeVariant[category.label]}>{category.label}</Badge>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
         <div className="flex items-center gap-3">
           <Progress value={category.score} className="flex-1" />
-          <span className="text-sm font-semibold w-10 text-right">
-            {category.score}%
+          <span className="text-sm font-semibold w-10 text-right tabular-nums">
+            <NumberTicker value={category.score} delay={delay} />
+            <span className="text-muted-foreground">%</span>
           </span>
         </div>
-        <p className="text-sm text-muted-foreground">{category.tip}</p>
-      </CardContent>
-    </Card>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          {category.tip}
+        </p>
+      </div>
+    </MagicCard>
   );
 }
