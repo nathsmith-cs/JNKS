@@ -1,20 +1,22 @@
 """FastAPI server with WebSocket for real-time shot analysis.
 
-Phone streams frames over WebSocket, server runs the pipeline,
-pushes back results when a batch of 5 shots is complete.
+Phone records 3-second video chunks via MediaRecorder and sends them
+over WebSocket. Server processes each chunk with OpenCV (same quality
+as uploaded videos). State persists across chunks.
 """
 
 import asyncio
 import base64
 import json
 import os
+import tempfile
 import time
 
 import cv2
 import numpy as np
-import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from pipeline.tracker import PoseTracker, LANDMARK_NAMES
 from pipeline.detector import BallDetector, BallTracker
@@ -34,7 +36,7 @@ app.add_middleware(
 
 FOLLOW_THROUGH_FRAMES = 15
 SHOT_MIN_FRAMES = 20
-MIN_SHOT_FRAMES = 45
+MIN_SHOT_FRAMES = 30
 BALL_LOST_GRACE = 5
 SHOTS_PER_BATCH = 5
 
@@ -122,13 +124,9 @@ WEIGHTS = {"Elbow Angle": 0.3, "Follow-Through": 0.25, "Release Point": 0.25, "S
 
 
 def _analyze_shot(landmark_buffer, ref_path):
-    """Analyze a single shot and return comparison data."""
     phases = detect_phases(landmark_buffer)
     angles = compute_angle_sequence(landmark_buffer)
-    result = {
-        "frames": len(landmark_buffer),
-        "phases": phases,
-    }
+    result = {"frames": len(landmark_buffer), "phases": phases}
     if ref_path:
         match = find_best_match(landmark_buffer, ref_path)
         if match:
@@ -142,7 +140,6 @@ def _analyze_shot(landmark_buffer, ref_path):
 
 
 def _batch_report(shot_analyses):
-    """Build the frontend-compatible result from a batch of shot analyses."""
     phase_totals = {}
     phase_counts = {}
     angle_diffs_totals = {}
@@ -166,200 +163,210 @@ def _batch_report(shot_analyses):
         else:
             score = 50.0
         label = _get_label(score)
-        categories.append({
-            "name": cat_name,
-            "score": score,
-            "label": label,
-            "tip": TIPS[cat_name][label],
-        })
+        categories.append({"name": cat_name, "score": score, "label": label, "tip": TIPS[cat_name][label]})
 
     overall = round(sum(c["score"] * WEIGHTS[c["name"]] for c in categories), 1)
 
     worst_angles = sorted(angle_diffs_totals.items(),
-                          key=lambda x: x[1] / angle_diffs_counts[x[0]],
-                          reverse=True)
+                          key=lambda x: x[1] / angle_diffs_counts[x[0]], reverse=True)
     worst_joints = [{"joint": k, "avg_diff_degrees": round(v / angle_diffs_counts[k], 1)}
                     for k, v in worst_angles[:5]]
 
+    shot_comparisons = []
+    for i, shot in enumerate(shot_analyses):
+        comp = shot.get("comparison")
+        if comp:
+            shot_comparisons.append({
+                "shot": i + 1, "best_ref": comp["best_ref"],
+                "score": comp["score"], "phase_scores": comp["phase_scores"],
+            })
+
     return {
-        "overallScore": overall,
-        "overallLabel": _get_label(overall),
-        "categories": categories,
-        "worstJoints": worst_joints,
-        "shotCount": len(shot_analyses),
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "overallScore": overall, "overallLabel": _get_label(overall),
+        "categories": categories, "worstJoints": worst_joints,
+        "shotComparisons": shot_comparisons,
+        "shotCount": len(shot_analyses), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+
+
+def _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events):
+    """Process all frames in a VideoCapture. Mutates state dict. Appends events to ws_events."""
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        state["chunk_frames"] += 1
+        h, w = frame.shape[:2]
+
+        run_yolo = False
+        if state["cooldown_skip"] > 0:
+            state["cooldown_skip"] -= 1
+            state["ball_boxes"] = []
+        elif state["shot_cooldown"] > 0:
+            state["ball_boxes"] = []
+        elif state["confirm_frames"] > 0:
+            run_yolo = True
+            state["confirm_frames"] -= 1
+        elif state["shot_frames"] > 0 and state["frame_number"] % 5 == 0:
+            run_yolo = True
+        else:
+            run_yolo = True  # Run every frame when scanning
+
+        need_pose = bool(state["ball_boxes"]) or state["shot_cooldown"] > 0
+
+        if run_yolo:
+            state["ball_boxes"] = ball_detector.detect(frame)
+            if not need_pose and state["ball_boxes"]:
+                state["confirm_frames"] = 3
+        if need_pose or state["ball_boxes"]:
+            landmarks = tracker.process(frame)
+        else:
+            landmarks = None
+
+        ball_info = state["ball_tracker"].update(landmarks, state["ball_boxes"], w, h)
+
+        if ball_info["has_ball"]:
+            state["shot_frames"] += 1
+            state["shot_cooldown"] = 0
+            state["ball_lost"] = 0
+        elif state["shot_frames"] > 0:
+            state["ball_lost"] += 1
+            if state["ball_lost"] <= BALL_LOST_GRACE:
+                state["confirm_frames"] = max(state["confirm_frames"], 1)
+            else:
+                if state["shot_frames"] >= SHOT_MIN_FRAMES:
+                    state["shot_cooldown"] = FOLLOW_THROUGH_FRAMES
+                state["shot_frames"] = 0
+                state["ball_lost"] = 0
+
+        tracking = ball_info["has_ball"] or state["shot_frames"] > 0 or state["shot_cooldown"] > 0
+
+        if tracking:
+            state["landmarks"].append(landmarks)
+            state["shot_frame_buf"].append(frame.copy())
+
+        if not tracking and state["landmarks"]:
+            print(f"\nShot ended: {len(state['landmarks'])} landmarks, {len(state['shot_frame_buf'])} frames")
+            if len(state["landmarks"]) >= MIN_SHOT_FRAMES:
+                # Save debug shot
+                debug_dir = os.path.join(os.path.dirname(__file__), "debug_shots")
+                os.makedirs(debug_dir, exist_ok=True)
+                shot_path = os.path.join(debug_dir, f"shot_{time.strftime('%H-%M-%S')}.mp4")
+                if state["shot_frame_buf"]:
+                    sh, sw = state["shot_frame_buf"][0].shape[:2]
+                    vw = cv2.VideoWriter(shot_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (sw, sh))
+                    for sf in state["shot_frame_buf"]:
+                        vw.write(sf)
+                    vw.release()
+                    print(f"\nSaved debug shot: {shot_path} ({len(state['shot_frame_buf'])} frames)")
+
+                analysis = _analyze_shot(state["landmarks"], ref_path)
+                state["batch_shots"].append(analysis)
+                ws_events.append(("shot", analysis))
+
+            state["landmarks"] = []
+            state["shot_frame_buf"] = []
+
+        if state["shot_cooldown"] > 0:
+            state["shot_cooldown"] -= 1
+            if state["shot_cooldown"] == 0:
+                state["cooldown_skip"] = 90
+
+        state["frame_number"] += 1
 
 
 @app.websocket("/ws/analyze")
 async def ws_analyze(ws: WebSocket):
+    """Receive video chunks from MediaRecorder, process with OpenCV."""
     await ws.accept()
 
-    ref_name = "StephCurryShots"
-    ref_path = os.path.join(REF_DIR, ref_name)
-
+    ref_path = os.path.join(REF_DIR, "StephCurryShots")
     tracker, ball_detector = _get_models()
-    ball_tracker = BallTracker()
 
-    frame_number = 0
-    shot_frames_count = 0
-    shot_cooldown = 0
-    ball_boxes = []
-    confirm_frames = 0
-    cooldown_skip = 0
-    ball_lost_frames = 0
-
-    shot_buffer = []
-    landmark_buffer = []
-    batch_shots = []
+    state = {
+        "frame_number": 0, "shot_frames": 0, "shot_cooldown": 0,
+        "ball_boxes": [], "confirm_frames": 0, "cooldown_skip": 0,
+        "ball_lost": 0, "landmarks": [], "shot_frame_buf": [],
+        "batch_shots": [], "ball_tracker": BallTracker(),
+        "chunk_frames": 0,
+    }
     shot_advices = []
+    chunk_count = 0
 
     try:
-        # Wait for config message (optional)
-        # Client can send {"type": "config", "reference": "KevinDurantShots"}
-
         while True:
             data = await ws.receive_bytes()
+            chunk_count += 1
+            state["chunk_frames"] = 0
 
-            # Decode JPEG frame from client
-            arr = np.frombuffer(data, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is None:
-                continue
+            # Write chunk to temp file — OpenCV needs a file path
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
 
-            h, w = frame.shape[:2]
+            cap = cv2.VideoCapture(tmp_path)
+            ws_events = []
 
-            # Detection logic (same as process.py)
-            run_yolo = False
-            if cooldown_skip > 0:
-                cooldown_skip -= 1
-                ball_boxes = []
-            elif shot_cooldown > 0:
-                ball_boxes = []
-            elif confirm_frames > 0:
-                run_yolo = True
-                confirm_frames -= 1
-            elif shot_frames_count > 0 and frame_number % 10 == 0:
-                run_yolo = True
-            elif shot_frames_count == 0 and frame_number % 5 == 0:
-                run_yolo = True
+            _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events)
 
-            need_pose = bool(ball_boxes) or shot_cooldown > 0
+            cap.release()
+            os.unlink(tmp_path)
 
-            if run_yolo:
-                ball_boxes = ball_detector.detect(frame)
-                if not need_pose and ball_boxes:
-                    confirm_frames = 3
-            if need_pose or ball_boxes:
-                landmarks = tracker.process(frame)
-            else:
-                landmarks = None
+            # Send events for any shots detected in this chunk
+            for event_type, analysis in ws_events:
+                score = analysis.get("comparison", {}).get("score", 0)
+                ref = analysis.get("comparison", {}).get("best_ref", "unknown")
+                comp = analysis.get("comparison")
 
-            ball_info = ball_tracker.update(landmarks, ball_boxes, w, h)
+                gemini_advice = await analyze_shot_with_gemini(state["landmarks"] or [], comp)
+                shot_advices.append(gemini_advice)
 
-            if ball_info["has_ball"]:
-                shot_frames_count += 1
-                shot_cooldown = 0
-                ball_lost_frames = 0
-            elif shot_frames_count > 0:
-                ball_lost_frames += 1
-                if ball_lost_frames <= BALL_LOST_GRACE:
-                    confirm_frames = max(confirm_frames, 1)
-                else:
-                    if shot_frames_count >= SHOT_MIN_FRAMES:
-                        shot_cooldown = FOLLOW_THROUGH_FRAMES
-                    shot_frames_count = 0
-                    ball_lost_frames = 0
-
-            tracking = ball_info["has_ball"] or shot_frames_count > 0 or shot_cooldown > 0
-
-            if tracking:
-                landmark_buffer.append(landmarks)
-
-            if not tracking and landmark_buffer:
-                # Shot ended — analyze if valid
-                if len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-                    analysis = _analyze_shot(landmark_buffer, ref_path)
-                    batch_shots.append(analysis)
-
-                    score = analysis.get("comparison", {}).get("score", 0)
-                    ref = analysis.get("comparison", {}).get("best_ref", "unknown")
-                    comp = analysis.get("comparison")
-
-                    # Get Gemini advice for this shot
-                    gemini_advice = await analyze_shot_with_gemini(landmark_buffer, comp)
-                    shot_advices.append(gemini_advice)
-
-                    # Send shot detected event
-                    await ws.send_json({
-                        "type": "shot_detected",
-                        "shot_number": len(batch_shots),
-                        "score": score,
-                        "best_ref": ref,
-                        "advice": gemini_advice,
-                        "shots_in_batch": len(batch_shots),
-                        "shots_needed": SHOTS_PER_BATCH,
-                    })
-
-                    # Batch complete
-                    if len(batch_shots) >= SHOTS_PER_BATCH:
-                        report = _batch_report(batch_shots)
-
-                        # Distill all advice into 2 sentences
-                        coaching = await distill_advice(shot_advices, report)
-                        report["coaching"] = coaching
-
-                        # Convert coaching to speech
-                        audio_b64 = await text_to_speech(coaching)
-                        if audio_b64:
-                            report["audio"] = audio_b64
-
-                        # Save to file for debugging
-                        results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
-                        with open(results_path, "w") as f:
-                            # Don't save audio blob to debug file
-                            debug_report = {k: v for k, v in report.items() if k != "audio"}
-                            json.dump(debug_report, f, indent=2)
-
-                        # Store for voice coach context
-                        global _latest_report
-                        _latest_report = report
-
-                        await ws.send_json({
-                            "type": "batch_complete",
-                            "result": report,
-                        })
-                        batch_shots = []
-                        shot_advices = []
-
-                landmark_buffer = []
-
-            if shot_cooldown > 0:
-                shot_cooldown -= 1
-                if shot_cooldown == 0:
-                    cooldown_skip = 90
-
-            # Send status every 30 frames
-            if frame_number % 30 == 0:
                 await ws.send_json({
-                    "type": "status",
-                    "frame": frame_number,
-                    "tracking": tracking,
-                    "shots_in_batch": len(batch_shots),
+                    "type": "shot_detected",
+                    "shot_number": len(state["batch_shots"]),
+                    "score": score, "best_ref": ref, "advice": gemini_advice,
+                    "shots_in_batch": len(state["batch_shots"]),
+                    "shots_needed": SHOTS_PER_BATCH,
                 })
 
-            frame_number += 1
+                if len(state["batch_shots"]) >= SHOTS_PER_BATCH:
+                    report = _batch_report(state["batch_shots"])
+                    coaching = await distill_advice(shot_advices, report)
+                    report["coaching"] = coaching
+
+                    audio_b64 = await text_to_speech(coaching)
+                    if audio_b64:
+                        report["audio"] = audio_b64
+
+                    results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
+                    with open(results_path, "w") as f:
+                        debug_report = {k: v for k, v in report.items() if k != "audio"}
+                        json.dump(debug_report, f, indent=2)
+
+                    global _latest_report
+                    _latest_report = report
+
+                    await ws.send_json({"type": "batch_complete", "result": report})
+                    state["batch_shots"] = []
+                    shot_advices = []
+
+            print(f"\rchunk={chunk_count} frames={state['chunk_frames']} total={state['frame_number']} sf={state['shot_frames']} shots={len(state['batch_shots'])}    ", end="", flush=True)
+
+            await ws.send_json({
+                "type": "status",
+                "frame": state["frame_number"],
+                "tracking": state["shot_frames"] > 0 or state["shot_cooldown"] > 0,
+                "shots_in_batch": len(state["batch_shots"]),
+            })
 
     except WebSocketDisconnect:
         pass
     finally:
-        tracker.close()
-        # Analyze any remaining shot
-        if landmark_buffer and len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-            analysis = _analyze_shot(landmark_buffer, ref_path)
-            batch_shots.append(analysis)
-        if batch_shots:
-            report = _batch_report(batch_shots)
+        if state["landmarks"] and len(state["landmarks"]) >= MIN_SHOT_FRAMES:
+            analysis = _analyze_shot(state["landmarks"], ref_path)
+            state["batch_shots"].append(analysis)
+        if state["batch_shots"]:
+            report = _batch_report(state["batch_shots"])
             results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
             with open(results_path, "w") as f:
                 json.dump(report, f, indent=2)
@@ -371,26 +378,15 @@ _latest_report = {}
 
 @app.websocket("/ws/voice")
 async def ws_voice(ws: WebSocket):
-    """Voice coach WebSocket. Frontend sends audio only when voice is detected.
-
-    Protocol:
-    - Client sends: raw bytes (PCM 16-bit 16kHz) when voice detected
-    - Client sends: JSON {"type": "end"} to close
-    - Server sends: JSON {"type": "audio", "data": "<base64 pcm 24kHz>"}
-    - Server sends: JSON {"type": "ready"} when Gemini session is up
-    """
     await ws.accept()
-
     gemini_ws = await create_live_session(_latest_report)
     if not gemini_ws:
-        await ws.send_json({"type": "error", "message": "Voice coach unavailable (no API key or connection failed)"})
+        await ws.send_json({"type": "error", "message": "Voice coach unavailable"})
         await ws.close()
         return
-
     await ws.send_json({"type": "ready"})
 
     async def forward_responses():
-        """Forward Gemini audio responses back to the client."""
         try:
             while True:
                 chunks = await receive_audio(gemini_ws)
@@ -402,12 +398,10 @@ async def ws_voice(ws: WebSocket):
             pass
 
     response_task = asyncio.create_task(forward_responses())
-
     try:
         while True:
             data = await ws.receive()
             if "bytes" in data:
-                # Raw PCM audio from client — forward to Gemini
                 pcm_b64 = base64.b64encode(data["bytes"]).decode("utf-8")
                 await send_audio(gemini_ws, pcm_b64)
             elif "text" in data:
@@ -426,7 +420,6 @@ async def analyze_upload(
     video: UploadFile = File(...),
     reference: str = Query(default="StephCurryShots"),
 ):
-    """Upload a video file for analysis. Returns the same result format as the WebSocket path."""
     ref_path = os.path.join(REF_DIR, reference)
     if not os.path.isdir(ref_path):
         from fastapi.responses import JSONResponse
@@ -438,98 +431,31 @@ async def analyze_upload(
 
     try:
         tracker, ball_detector = _get_models()
-        ball_tracker = BallTracker()
-        cap = cv2.VideoCapture(tmp_path)
-
-        frame_number = 0
-        shot_frames_count = 0
-        shot_cooldown = 0
-        ball_boxes = []
-        confirm_frames = 0
-        cooldown_skip = 0
-        ball_lost_frames = 0
-        landmark_buffer = []
-        batch_shots = []
+        state = {
+            "frame_number": 0, "shot_frames": 0, "shot_cooldown": 0,
+            "ball_boxes": [], "confirm_frames": 0, "cooldown_skip": 0,
+            "ball_lost": 0, "landmarks": [], "shot_frame_buf": [],
+            "batch_shots": [], "ball_tracker": BallTracker(),
+            "chunk_frames": 0,
+        }
         shot_advices = []
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            run_yolo = False
-            if cooldown_skip > 0:
-                cooldown_skip -= 1
-                ball_boxes = []
-            elif shot_cooldown > 0:
-                ball_boxes = []
-            elif confirm_frames > 0:
-                run_yolo = True
-                confirm_frames -= 1
-            elif shot_frames_count > 0 and frame_number % 10 == 0:
-                run_yolo = True
-            elif shot_frames_count == 0 and frame_number % 5 == 0:
-                run_yolo = True
-
-            h, w = frame.shape[:2]
-            need_pose = bool(ball_boxes) or shot_cooldown > 0
-
-            if run_yolo:
-                ball_boxes = ball_detector.detect(frame)
-                if not need_pose and ball_boxes:
-                    confirm_frames = 3
-            if need_pose or ball_boxes:
-                landmarks = tracker.process(frame)
-            else:
-                landmarks = None
-
-            ball_info = ball_tracker.update(landmarks, ball_boxes, w, h)
-
-            if ball_info["has_ball"]:
-                shot_frames_count += 1
-                shot_cooldown = 0
-                ball_lost_frames = 0
-            elif shot_frames_count > 0:
-                ball_lost_frames += 1
-                if ball_lost_frames <= BALL_LOST_GRACE:
-                    confirm_frames = max(confirm_frames, 1)
-                else:
-                    if shot_frames_count >= SHOT_MIN_FRAMES:
-                        shot_cooldown = FOLLOW_THROUGH_FRAMES
-                    shot_frames_count = 0
-                    ball_lost_frames = 0
-
-            tracking = ball_info["has_ball"] or shot_frames_count > 0 or shot_cooldown > 0
-
-            if tracking:
-                landmark_buffer.append(landmarks)
-            elif landmark_buffer:
-                if len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-                    analysis = _analyze_shot(landmark_buffer, ref_path)
-                    batch_shots.append(analysis)
-                    comp = analysis.get("comparison")
-                    advice = await analyze_shot_with_gemini(landmark_buffer, comp)
-                    shot_advices.append(advice)
-                landmark_buffer = []
-
-            if shot_cooldown > 0:
-                shot_cooldown -= 1
-                if shot_cooldown == 0:
-                    cooldown_skip = int((cap.get(cv2.CAP_PROP_FPS) or 30) * 3)
-
-            frame_number += 1
-
-        # Flush remaining
-        if landmark_buffer and len(landmark_buffer) >= MIN_SHOT_FRAMES and _is_shot_motion(landmark_buffer):
-            analysis = _analyze_shot(landmark_buffer, ref_path)
-            batch_shots.append(analysis)
-            comp = analysis.get("comparison")
-            advice = await analyze_shot_with_gemini(landmark_buffer, comp)
-            shot_advices.append(advice)
-
+        cap = cv2.VideoCapture(tmp_path)
+        ws_events = []
+        _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events)
         cap.release()
 
-        report = _batch_report(batch_shots)
+        # Flush remaining
+        if state["landmarks"] and len(state["landmarks"]) >= MIN_SHOT_FRAMES:
+            analysis = _analyze_shot(state["landmarks"], ref_path)
+            state["batch_shots"].append(analysis)
+
+        for shot in state["batch_shots"]:
+            comp = shot.get("comparison")
+            advice = await analyze_shot_with_gemini([], comp)
+            shot_advices.append(advice)
+
+        report = _batch_report(state["batch_shots"])
         coaching = await distill_advice(shot_advices, report)
         report["coaching"] = coaching
 
@@ -555,6 +481,23 @@ async def list_references():
                 count = len([f for f in os.listdir(path) if f.endswith(".json")])
                 refs.append({"name": name, "shots": count})
     return refs
+
+
+# Serve Next.js static export pages
+_out_dir = os.path.join(os.path.dirname(__file__), "..", "out")
+if os.path.isdir(_out_dir):
+    from fastapi.responses import FileResponse
+
+    @app.get("/analyze")
+    async def serve_analyze():
+        return FileResponse(os.path.join(_out_dir, "analyze.html"))
+
+    @app.get("/results")
+    async def serve_results():
+        return FileResponse(os.path.join(_out_dir, "results.html"))
+
+    # Catch-all for static assets (_next/, images, etc.)
+    app.mount("/", StaticFiles(directory=_out_dir, html=True), name="frontend")
 
 
 if __name__ == "__main__":
