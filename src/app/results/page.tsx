@@ -52,8 +52,13 @@ export default function ResultsPage() {
       </div>
 
       <BlurFade delay={0.4} inView>
-        <div className="flex justify-center">
+        <div className="flex flex-col items-center gap-3">
           <OverallScore score={result.overallScore} label={result.overallLabel} />
+          {result.mostSimilarPlayer && (
+            <p className="text-sm text-muted-foreground">
+              Most similar to <span className="font-semibold text-foreground">{result.mostSimilarPlayer.replace(/Shots$/, "").replace(/([A-Z])/g, " $1").trim()}</span>
+            </p>
+          )}
         </div>
       </BlurFade>
 
@@ -100,40 +105,6 @@ export default function ResultsPage() {
         <TipsSection categories={result.categories} />
       </BlurFade>
 
-      {result.worstJoints && result.worstJoints.length > 0 && (
-        <>
-          <Separator className="opacity-30" />
-          <div className="space-y-4">
-            <TextAnimate
-              as="h2"
-              by="word"
-              animation="blurInUp"
-              startOnView
-              once
-              className="text-xl font-semibold"
-            >
-              Joints to Focus On
-            </TextAnimate>
-            <BlurFade delay={0.3} inView>
-              <div className="space-y-3">
-                {result.worstJoints.map((joint) => (
-                  <div
-                    key={joint.joint}
-                    className="flex items-center justify-between rounded-lg border border-border p-3"
-                  >
-                    <span className="text-sm font-medium capitalize">
-                      {joint.joint.replace(/_/g, " ")}
-                    </span>
-                    <span className="text-sm text-muted-foreground">
-                      {joint.avg_diff_degrees}° off
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </BlurFade>
-          </div>
-        </>
-      )}
 
       <Separator className="opacity-30" />
 

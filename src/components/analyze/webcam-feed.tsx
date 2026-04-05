@@ -162,6 +162,16 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
         setLastScore(msg.score);
         onShotDetected?.(msg);
       } else if (msg.type === "batch_complete") {
+        // Stop recording immediately — batch is done
+        streamingRef.current = false;
+        if (recorderRef.current && recorderRef.current.state === "recording") {
+          recorderRef.current.stop();
+        }
+        if (wsRef.current) {
+          wsRef.current.close();
+          wsRef.current = null;
+        }
+        setIsStreaming(false);
         setShotsInBatch(0);
         setLastScore(null);
         if (msg.result.audio) {
@@ -275,4 +285,4 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
   );
 }
 
-const SHOTS_PER_BATCH = 1; // For testing — change to 5 for production
+const SHOTS_PER_BATCH = 5;

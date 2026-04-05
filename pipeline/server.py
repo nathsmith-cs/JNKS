@@ -21,8 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from pipeline.tracker import PoseTracker, LANDMARK_NAMES
 from pipeline.detector import BallDetector, BallTracker
 from pipeline.phases import detect_phases, compute_angle_sequence
-from pipeline.compare import find_best_match
-from pipeline.llm import analyze_shot_with_gemini, distill_advice, text_to_speech
+from pipeline.compare import find_best_match, find_best_match_all
+from pipeline.llm import analyze_shot_with_gemini, analyze_shot_video, distill_to_structured, text_to_speech
 from pipeline.voice import create_live_session, send_audio, receive_audio
 from pipeline.video import convert_video, split_video
 from pipeline.pose_extract import extract_keypoints, keypoints_to_named
@@ -136,10 +136,11 @@ def _analyze_shot(landmark_buffer, ref_path):
     angles = compute_angle_sequence(landmark_buffer)
     result = {"frames": len(landmark_buffer), "phases": phases}
     if ref_path:
-        match = find_best_match(landmark_buffer, ref_path)
+        match = find_best_match_all(landmark_buffer, ref_path)
         if match:
             result["comparison"] = {
                 "best_ref": match["best_ref"],
+                "player": match.get("player", "unknown"),
                 "score": match["best_score"],
                 "phase_scores": match["analysis"]["phase_scores"],
                 "angle_diffs": match["analysis"]["angle_diffs"],
@@ -295,6 +296,7 @@ def _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events):
                         vw.write(sf)
                     vw.release()
                     print(f"\nSaved debug shot: {shot_path} ({len(state['shot_frame_buf'])} frames)")
+                    state["shot_video_paths"].append(shot_path)
 
                 analysis = _analyze_shot(state["landmarks"], ref_path)
                 state["batch_shots"].append(analysis)
@@ -311,24 +313,32 @@ def _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events):
         state["frame_number"] += 1
 
 
+# Persist batch across WebSocket reconnections
+_session_batch_shots = []
+_session_shot_advices = []
+_session_video_paths = []
+
+
 @app.websocket("/ws/analyze")
 async def ws_analyze(ws: WebSocket):
     """Receive video chunks from MediaRecorder, process with OpenCV."""
+    global _session_batch_shots, _session_shot_advices, _session_video_paths
     await ws.accept()
 
-    ref_path = os.path.join(REF_DIR, "StephCurryShots")
+    ref_path = REF_DIR  # Search all player directories
     tracker, ball_detector = _get_models()
 
     state = {
         "frame_number": 0, "shot_frames": 0, "shot_cooldown": 0,
         "ball_boxes": [], "confirm_frames": 0, "cooldown_skip": 0,
         "ball_lost": 0, "landmarks": [], "shot_frame_buf": [],
-        "batch_shots": [], "ball_tracker": BallTracker(),
-        "chunk_frames": 0,
+        "batch_shots": _session_batch_shots, "ball_tracker": BallTracker(),
+        "chunk_frames": 0, "shot_video_paths": _session_video_paths,
     }
-    shot_advices = []
-    batch_finalizing = False  # guard against double-finalization
+    shot_advices = _session_shot_advices
     chunk_count = 0
+
+    print(f"\nResuming with {len(state['batch_shots'])} shots from previous connection")
 
     try:
         while True:
@@ -355,52 +365,85 @@ async def ws_analyze(ws: WebSocket):
                 ref = analysis.get("comparison", {}).get("best_ref", "unknown")
                 comp = analysis.get("comparison")
 
-                # Send shot detected event immediately (don't wait for Gemini)
                 shot_number = len(state["batch_shots"])
+
+                # Send per-shot video to Gemini (non-blocking for the user)
+                video_path = state["shot_video_paths"][-1] if state["shot_video_paths"] else None
+                if video_path:
+                    print(f"\nSending shot {shot_number} video to Gemini...")
+                    try:
+                        advice = await asyncio.wait_for(
+                            analyze_shot_video(video_path, comp), timeout=30
+                        )
+                        if advice:
+                            shot_advices.append(advice)
+                            print(f"Shot {shot_number} advice: {advice[:80]}...")
+                    except Exception as e:
+                        print(f"Gemini shot {shot_number} failed: {e}")
+
                 await ws.send_json({
                     "type": "shot_detected",
                     "shot_number": shot_number,
                     "score": score,
                     "best_ref": ref,
-                    "advice": None,
                     "shots_in_batch": shot_number,
                     "shots_needed": SHOTS_PER_BATCH,
                 })
 
-                # Fire-and-forget Gemini advice so the frame loop
-                # keeps processing while LLM responds (~3-5s).
-                async def _get_advice_and_maybe_batch(
-                    lm_buf, comp_data, shot_num,
-                ):
-                    nonlocal batch_finalizing
-                    gemini_advice = await analyze_shot_with_gemini(lm_buf, comp_data)
-                    shot_advices.append(gemini_advice)
+                # Batch complete — get structured scores + coaching from Gemini
+                if len(state["batch_shots"]) >= SHOTS_PER_BATCH:
+                    # Wireframe report as fallback
+                    fallback_report = _batch_report(state["batch_shots"])
 
-                    # Send advice as a follow-up message
-                    try:
-                        await ws.send_json({
-                            "type": "shot_advice",
-                            "shot_number": shot_num,
-                            "advice": gemini_advice,
-                        })
-                    except Exception:
-                        pass
+                    # Ask Gemini for structured scores based on video observations
+                    report = None
+                    if shot_advices:
+                        try:
+                            print(f"\nDistilling {len(shot_advices)} shot advices into structured report...")
+                            report = await asyncio.wait_for(
+                                distill_to_structured(shot_advices, fallback_report), timeout=20
+                            )
+                        except Exception as e:
+                            print(f"\nGemini structured distill failed: {e}")
 
-                    # Check if batch is now complete (guard against double-finalize)
-                    if (
-                        not batch_finalizing
-                        and len(state["batch_shots"]) >= SHOTS_PER_BATCH
-                        and len(shot_advices) >= SHOTS_PER_BATCH
-                    ):
-                        batch_finalizing = True
-                        await _finalize_batch(ws, state["batch_shots"], shot_advices)
-                        state["batch_shots"].clear()
-                        shot_advices.clear()
-                        batch_finalizing = False
+                    # Find most similar player across all shots
+                    player_counts = {}
+                    for shot in state["batch_shots"]:
+                        player = shot.get("comparison", {}).get("player")
+                        if player:
+                            player_counts[player] = player_counts.get(player, 0) + 1
+                    most_similar = max(player_counts, key=player_counts.get) if player_counts else None
 
-                asyncio.create_task(
-                    _get_advice_and_maybe_batch(state["landmarks"] or [], comp, shot_number)
-                )
+                    # Use Gemini report if valid, otherwise fallback to wireframe
+                    if report:
+                        report["shotCount"] = len(state["batch_shots"])
+                        report["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        if most_similar:
+                            report["mostSimilarPlayer"] = most_similar
+                        print(f"\nGemini scores: {report.get('overallScore')} — {report.get('coaching', '')[:80]}")
+                    else:
+                        report = fallback_report
+                        if most_similar:
+                            report["mostSimilarPlayer"] = most_similar
+                        from pipeline.llm import _fallback_advice
+                        report["coaching"] = _fallback_advice(report)
+                        print(f"\nFallback coaching: {report['coaching']}")
+
+                    results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
+                    with open(results_path, "w") as f:
+                        json.dump(report, f, indent=2)
+
+                    global _latest_report
+                    _latest_report = report
+
+                    # Send results IMMEDIATELY — don't wait for TTS
+                    await ws.send_json({"type": "batch_complete", "result": report})
+                    state["batch_shots"].clear()
+                    state["shot_video_paths"].clear()
+                    shot_advices.clear()
+                    _session_batch_shots = state["batch_shots"]
+                    _session_shot_advices = shot_advices
+                    _session_video_paths = state["shot_video_paths"]
 
             print(f"\rchunk={chunk_count} frames={state['chunk_frames']} total={state['frame_number']} sf={state['shot_frames']} shots={len(state['batch_shots'])}    ", end="", flush=True)
 

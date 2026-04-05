@@ -34,5 +34,6 @@ export interface AnalysisResult {
   shotCount?: number;
   coaching?: string;
   coachSummary?: string | null;
+  mostSimilarPlayer?: string;
   clips?: ClipResult[] | null;
 }

@@ -318,3 +318,29 @@ def find_best_match(user_landmarks, ref_dir):
         "analysis": best_analysis,
         "all_scores": [(name, r["overall_score"]) for name, r in results],
     }
+
+
+def find_best_match_all(user_landmarks, ref_base_dir):
+    """Compare a user shot against ALL reference player directories.
+
+    Searches every subfolder in ref_base_dir (StephCurryShots, KlayThompsonShots, etc.)
+    and returns the single best match across all players.
+    """
+    all_results = []
+    if not os.path.isdir(ref_base_dir):
+        return None
+
+    for player_dir in sorted(os.listdir(ref_base_dir)):
+        player_path = os.path.join(ref_base_dir, player_dir)
+        if not os.path.isdir(player_path):
+            continue
+        match = find_best_match(user_landmarks, player_path)
+        if match:
+            match["player"] = player_dir
+            all_results.append(match)
+
+    if not all_results:
+        return None
+
+    all_results.sort(key=lambda x: x["best_score"], reverse=True)
+    return all_results[0]
