@@ -13,10 +13,10 @@ from pipeline.gemini_vision import (
 )
 
 WEIGHTS = {
-    "Elbow Angle": 0.3,
+    "Elbow Angle": 0.25,
     "Follow-Through": 0.25,
     "Release Point": 0.25,
-    "Stance": 0.2,
+    "Stance": 0.25,
 }
 
 TIPS = {

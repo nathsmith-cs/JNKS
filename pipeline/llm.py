@@ -50,13 +50,15 @@ Here is what a video analysis AI observed for each shot:
 Based on what was observed, return a JSON object with your assessment.
 Score each category 0-100. Be encouraging — grade relative to recreational/amateur players, NOT NBA pros. A decent recreational player with good fundamentals should score 75-85. Only give below 60 if the form is truly broken.
 
-For each category, write a tip that starts with what's good about their form, then what to improve. Be specific and reference what was actually observed.
+For each category, write a SHORT tip (1 sentence max). Be specific and reference what was actually observed.
+
+IMPORTANT: Keep ALL text fields SHORT. The entire JSON must be under 800 tokens.
 
 Return ONLY valid JSON, no markdown, no explanation:
 {{
   "overallScore": <number 0-100>,
   "overallLabel": "<Excellent|Good|Needs Work|Poor>",
-  "coaching": "<Start with what they're doing well (1 sentence), then give the single most impactful thing to improve (1-2 sentences). Be specific about body parts and mechanics.>",
+  "coaching": "<2-3 sentences max. What they do well, then one thing to fix.>",
   "categories": [
     {{"name": "Elbow Angle", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice based on what was seen>"}},
     {{"name": "Follow-Through", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice>"}},
@@ -67,7 +69,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 
 Use these label rules: 90+ = Excellent, 75-89 = Good, 60-74 = Needs Work, below 60 = Poor."""
 
-    result = await _call_gemini(prompt, max_tokens=2000)
+    result = await _call_gemini(prompt, max_tokens=4096)
     if result:
         try:
             # Strip markdown fences if present
@@ -98,13 +100,12 @@ async def analyze_shot_video(video_path, comparison_data=None):
     parts = [
         {"text": f"""You are an expert basketball shooting coach watching a player shoot a basketball.
 
-Pose tracking comparison to Steph Curry:
+Pose tracking comparison to a pro reference:
 - Similarity: {score}%
 - Phase scores: {json.dumps(phase_scores)}
-- Joints most off: {json.dumps(dict(sorted(worst_angles.items(), key=lambda x: x[1], reverse=True)[:3]))}
 
 Watch the video. Give exactly 2 sentences of coaching advice based on what you SEE.
-Be specific — reference actual body positioning, arm angles, timing, or balance you observe. Be direct."""},
+Cover the FULL body — don't fixate on the elbow. Comment on stance, balance, release timing, follow-through, or whatever stands out most visually. Be specific and direct."""},
     ]
 
     with open(video_path, "rb") as f:
