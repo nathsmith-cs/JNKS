@@ -7,12 +7,12 @@ import httpx
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-ANALYSIS_MODEL = "gemini-3.1-pro"              # best quality for per-shot analysis
-DISTILL_MODEL = "gemini-3.1-flash-lite"        # cheapest, just combining existing advice
+ANALYSIS_MODEL = "gemini-3.1-pro-preview"              # video analysis (paid tier)
+DISTILL_MODEL = "gemini-2.5-flash"                     # distillation (fast/cheap)
 TTS_MODEL = "gemini-2.5-flash-preview-tts"     # low-latency text-to-speech
 
 
-async def _call_gemini(prompt, model=DISTILL_MODEL, max_tokens=200):
+async def _call_gemini(prompt, model=DISTILL_MODEL, max_tokens=500):
     """Call Gemini and return the text response."""
     if not GEMINI_API_KEY:
         return None
@@ -39,32 +39,95 @@ async def analyze_shot_with_gemini(landmark_buffer, comparison_data):
     return await _call_gemini(prompt, model=ANALYSIS_MODEL)
 
 
-async def distill_advice(shot_advices, batch_report):
-    """Distill 5 shot advices + scores into 2 sentences."""
-    overall = batch_report.get("overallScore", 0)
-    categories = batch_report.get("categories", [])
-    worst_joints = batch_report.get("worstJoints", [])
+async def distill_to_structured(shot_advices, batch_report):
+    """Distill per-shot video advice into structured JSON scores + coaching."""
 
-    prompt = f"""You are a basketball shooting coach. A player just took 5 shots.
-Their overall similarity to Steph Curry's form: {overall}%.
+    prompt = f"""You are an encouraging basketball shooting coach. A player just took {len(shot_advices)} shots.
 
-Category scores:
-{json.dumps(categories, indent=2)}
-
-Most off joints:
-{json.dumps(worst_joints, indent=2)}
-
-Individual shot feedback from video analysis:
+Here is what a video analysis AI observed for each shot:
 {chr(10).join(f"Shot {i+1}: {a}" for i, a in enumerate(shot_advices) if a)}
 
-Based on ALL of this data, give exactly 2 sentences of coaching advice.
-Focus on the single most impactful change they can make right now.
-Be specific and actionable — reference the actual body part and what to change."""
+Based on what was observed, return a JSON object with your assessment.
+Score each category 0-100. Be encouraging — grade relative to recreational/amateur players, NOT NBA pros. A decent recreational player with good fundamentals should score 75-85. Only give below 60 if the form is truly broken.
 
-    result = await _call_gemini(prompt, max_tokens=150)
+For each category, write a tip that starts with what's good about their form, then what to improve. Be specific and reference what was actually observed.
+
+Return ONLY valid JSON, no markdown, no explanation:
+{{
+  "overallScore": <number 0-100>,
+  "overallLabel": "<Excellent|Good|Needs Work|Poor>",
+  "coaching": "<Start with what they're doing well (1 sentence), then give the single most impactful thing to improve (1-2 sentences). Be specific about body parts and mechanics.>",
+  "categories": [
+    {{"name": "Elbow Angle", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice based on what was seen>"}},
+    {{"name": "Follow-Through", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice>"}},
+    {{"name": "Release Point", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice>"}},
+    {{"name": "Stance", "score": <0-100>, "label": "<Excellent|Good|Needs Work|Poor>", "tip": "<specific advice>"}}
+  ]
+}}
+
+Use these label rules: 90+ = Excellent, 75-89 = Good, 60-74 = Needs Work, below 60 = Poor."""
+
+    result = await _call_gemini(prompt, max_tokens=2000)
     if result:
-        return result
-    return _fallback_advice(batch_report)
+        try:
+            # Strip markdown fences if present
+            text = result.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text.rsplit("```", 1)[0]
+            text = text.strip()
+            parsed = json.loads(text)
+            # Validate required fields
+            if "overallScore" in parsed and "categories" in parsed and "coaching" in parsed:
+                return parsed
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Gemini JSON parse error: {e}, raw: {result[:200]}")
+    return None
+
+
+async def analyze_shot_video(video_path, comparison_data=None):
+    """Send a single shot video clip to Gemini for visual coaching."""
+    if not GEMINI_API_KEY or not video_path or not os.path.exists(video_path):
+        return None
+
+    score = comparison_data.get("score", 0) if comparison_data else 0
+    phase_scores = comparison_data.get("phase_scores", {}) if comparison_data else {}
+    worst_angles = comparison_data.get("angle_diffs", {}) if comparison_data else {}
+
+    parts = [
+        {"text": f"""You are an expert basketball shooting coach watching a player shoot a basketball.
+
+Pose tracking comparison to Steph Curry:
+- Similarity: {score}%
+- Phase scores: {json.dumps(phase_scores)}
+- Joints most off: {json.dumps(dict(sorted(worst_angles.items(), key=lambda x: x[1], reverse=True)[:3]))}
+
+Watch the video. Give exactly 2 sentences of coaching advice based on what you SEE.
+Be specific — reference actual body positioning, arm angles, timing, or balance you observe. Be direct."""},
+    ]
+
+    with open(video_path, "rb") as f:
+        video_b64 = base64.b64encode(f.read()).decode("utf-8")
+    parts.append({"inline_data": {"mime_type": "video/mp4", "data": video_b64}})
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{GEMINI_BASE}/{ANALYSIS_MODEL}:generateContent?key={GEMINI_API_KEY}",
+                json={
+                    "contents": [{"parts": parts}],
+                    "generationConfig": {"maxOutputTokens": 500, "temperature": 0.7},
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                print(f"Gemini video error {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        print(f"Gemini video error: {e}")
+    return None
 
 
 def _fallback_advice(batch_report):

@@ -285,4 +285,4 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
   );
 }
 
-const SHOTS_PER_BATCH = 1; // For testing — change to 5 for production
+const SHOTS_PER_BATCH = 5;
