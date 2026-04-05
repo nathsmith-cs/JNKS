@@ -202,7 +202,7 @@ async def _finalize_batch(ws: WebSocket, batch_shots, shot_advices):
     """Build batch report, distill coaching, generate TTS, and send to client."""
     report = _batch_report(batch_shots)
 
-    coaching = await distill_advice(shot_advices, report)
+    coaching = await distill_to_structured(shot_advices, report)
     report["coaching"] = coaching
 
     audio_b64 = await text_to_speech(coaching)
@@ -534,7 +534,6 @@ def _process_single_clip(idx: int, clip: str, max_clip_sec: int) -> dict:
 @app.post("/api/analyze")
 async def analyze_upload(
     video: UploadFile = File(...),
-    reference: str = Query(default="StephCurryShots"),
     input_type: str = Query(default="upload"),
 ):
     """Upload a video file for analysis.
@@ -543,6 +542,7 @@ async def analyze_upload(
     - Video is converted to mp4, split into clips
     - Each clip gets MediaPipe pose extraction + Gemini vision analysis
     - Final scores blend 40% MediaPipe metrics with 60% Gemini vision scores
+    - Compares against all reference players (Steph Curry, Klay Thompson, Kevin Durant)
 
     Optimizations applied:
     - O1: Clips processed in parallel via asyncio.to_thread
@@ -550,10 +550,6 @@ async def analyze_upload(
     - O5: Reuses pose keypoints for reference comparison (no second video pass)
     - O7: Smart remux for H.264 inputs
     """
-    ref_path = os.path.join(REF_DIR, reference)
-    if not os.path.isdir(ref_path):
-        from fastapi.responses import JSONResponse
-        return JSONResponse(status_code=400, content={"error": f"Reference '{reference}' not found"})
 
     suffix = os.path.splitext(video.filename or "video.mp4")[1] or ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -586,15 +582,17 @@ async def analyze_upload(
 
         # O5: Reference comparison using already-extracted keypoints
         # (no second video pass -- convert index-based keypoints to named dicts)
-        if os.path.isdir(ref_path):
+        # Compare against ALL reference players, not just one
+        if os.path.isdir(REF_DIR):
             all_named_landmarks: list[dict | None] = []
             for cr in clip_results:
                 all_named_landmarks.extend(keypoints_to_named(cr["raw_keypoints"]))
 
             valid_landmarks = [lm for lm in all_named_landmarks if lm is not None]
             if valid_landmarks:
-                match = find_best_match(valid_landmarks, ref_path)
+                match = find_best_match_all(valid_landmarks, REF_DIR)
                 if match:
+                    result["mostSimilarPlayer"] = match["player"]
                     angle_diffs = match["analysis"].get("angle_diffs", {})
                     worst_angles = sorted(
                         angle_diffs.items(), key=lambda x: x[1], reverse=True
@@ -609,7 +607,7 @@ async def analyze_upload(
             cr.pop("raw_keypoints", None)
 
         # Stage 9: Distill coaching advice
-        coaching = await distill_advice(
+        coaching = await distill_to_structured(
             [r["feedback"] for r in clip_results],
             result,
         )

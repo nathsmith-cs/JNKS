@@ -41,7 +41,7 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
       formData.append("video", file);
 
       const res = await fetch(
-        `${API_URL}/api/analyze?reference=StephCurryShots&input_type=${inputType}`,
+        `${API_URL}/api/analyze?input_type=${inputType}`,
         { method: "POST", body: formData }
       );
 
@@ -101,7 +101,7 @@ export function AnalyzeButton({ disabled, inputType, videoFile }: AnalyzeButtonP
       </Button>
       {isAnalyzing && (
         <p className="text-xs text-muted-foreground animate-pulse">
-          Comparing your shot to Steph Curry&apos;s form...
+          Comparing your shot to the pros...
         </p>
       )}
       {error && (

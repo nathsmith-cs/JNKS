@@ -71,6 +71,7 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
   const recorderRef = useRef<MediaRecorder | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showPermissionPrompt, setShowPermissionPrompt] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const streamingRef = useRef(false);
   const [tracking, setTracking] = useState(false);
@@ -268,12 +269,31 @@ export function WebcamFeed({ onReady, onShotDetected, onBatchComplete }: WebcamF
               <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
               <circle cx="12" cy="13" r="3" />
             </svg>
-            <p className="text-sm text-muted-foreground text-center">
-              Click below to start your camera and begin analyzing your shot.
-            </p>
-            <Button onClick={startCamera} className="mt-2">
-              Start Camera
-            </Button>
+            {showPermissionPrompt ? (
+              <>
+                <p className="text-sm font-medium text-foreground text-center">
+                  Camera access required
+                </p>
+                <p className="text-xs text-muted-foreground text-center">
+                  JNKS needs your camera to record and analyze your shooting form in real time. Your video is processed locally and never stored.
+                </p>
+                <p className="text-xs text-muted-foreground text-center">
+                  When prompted by your browser, tap <strong>&quot;Allow&quot;</strong> to continue.
+                </p>
+                <Button onClick={startCamera} className="mt-2">
+                  Allow Camera Access
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground text-center">
+                  Click below to start your camera and begin analyzing your shot.
+                </p>
+                <Button onClick={() => setShowPermissionPrompt(true)} className="mt-2">
+                  Start Camera
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>

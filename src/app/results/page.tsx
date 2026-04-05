@@ -73,9 +73,11 @@ export default function ResultsPage() {
                   {result.coachSummary}
                 </p>
               )}
-              {result.coaching && result.coaching !== result.coachSummary && (
+              {result.coaching && (
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  {result.coaching}
+                  {typeof result.coaching === "string"
+                    ? result.coaching
+                    : result.coaching.coaching}
                 </p>
               )}
             </div>

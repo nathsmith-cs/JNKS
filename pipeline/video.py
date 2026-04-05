@@ -36,22 +36,18 @@ def convert_video(path: str) -> str:
         raise ValueError(f"{path} looks too small to be a valid video")
 
     ext = os.path.splitext(path)[1].lower()
-    if ext == ".mp4":
+    if ext not in (".mp4", ".mov", ".webm", ".avi", ".mkv"):
         return path
 
-    if ext not in (".mov", ".webm", ".avi", ".mkv"):
-        return path
-
-    output = os.path.splitext(path)[0] + ".mp4"
-    if os.path.exists(output):
-        return output
+    output = os.path.splitext(path)[0] + "_fixed.mp4"
 
     # Probe the codec — remux if already H.264, re-encode otherwise
+    # Always use -fflags +genpts to fix non-monotonic timestamps (common in phone recordings)
     codec = _probe_video_codec(path)
     if codec == "h264":
-        cmd = ["ffmpeg", "-y", "-i", path, "-c", "copy", output]
+        cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-i", path, "-c", "copy", output]
     else:
-        cmd = ["ffmpeg", "-y", "-i", path,
+        cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-i", path,
                "-c:v", "libx264", "-c:a", "aac", output]
 
     result = subprocess.run(cmd, capture_output=True)

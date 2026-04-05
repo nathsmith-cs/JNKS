@@ -32,7 +32,12 @@ export interface AnalysisResult {
   timestamp: string;
   inputType: "webcam" | "upload";
   shotCount?: number;
-  coaching?: string;
+  coaching?: string | {
+    overallScore: number;
+    overallLabel: string;
+    coaching: string;
+    categories: CategoryScore[];
+  };
   coachSummary?: string | null;
   mostSimilarPlayer?: string;
   clips?: ClipResult[] | null;
