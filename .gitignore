@@ -21,6 +21,8 @@
 # misc
 .DS_Store
 *.pem
+*.json
+*.mp4
 
 # debug
 npm-debug.log*
@@ -46,3 +48,6 @@ output/
 *.task
 *.pt
 pipeline/latest_results.json
+certs/
+
+certificates
