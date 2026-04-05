@@ -10,7 +10,7 @@ import { useAccentColor } from "@/components/accent-color-provider";
 
 const BasketballScene = dynamic(
   () => import("@/components/3d/basketball-scene"),
-  { ssr: false }
+  { ssr: false, loading: () => null }
 );
 
 export function HeroSection() {

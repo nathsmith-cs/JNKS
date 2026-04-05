@@ -13,7 +13,7 @@ FALLBACK_BALL_CLASSES = {32, 29, 35, 26}
 
 
 class BallDetector:
-    def __init__(self, confidence=0.3):
+    def __init__(self, confidence=0.25):
         if os.path.exists(CUSTOM_MODEL):
             self._model = YOLO(CUSTOM_MODEL)
             self._custom = True
@@ -27,30 +27,20 @@ class BallDetector:
     def detect(self, frame_bgr):
         """Run YOLOv8 on a frame, return list of ball bounding boxes."""
         h, w = frame_bgr.shape[:2]
-        if w > 416:
-            scale = 416 / w
-            small = cv2.resize(frame_bgr, (416, int(h * scale)))
+        long_side = max(w, h)
+        if long_side > 960:
+            scale = 960 / long_side
+            small = cv2.resize(frame_bgr, (int(w * scale), int(h * scale)))
         else:
             small = frame_bgr
             scale = 1.0
-        results = self._model(small, conf=self._confidence, imgsz=416, verbose=False)
+        results = self._model(small, conf=self._confidence, imgsz=960, verbose=False)
         boxes = []
         for r in results:
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 if self._custom or cls_id in FALLBACK_BALL_CLASSES:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    bw = x2 - x1
-                    bh = y2 - y1
-                    if bw == 0 or bh == 0:
-                        continue
-                    aspect = max(bw, bh) / min(bw, bh)
-                    if aspect > 1.8:
-                        continue
-                    area = bw * bh
-                    frame_area = 640 * (int(h * (640 / w)) if w > 640 else h)
-                    if area < frame_area * 0.002 or area > frame_area * 0.15:
-                        continue
                     boxes.append({
                         "x1": x1 / scale, "y1": y1 / scale,
                         "x2": x2 / scale, "y2": y2 / scale,
@@ -62,12 +52,14 @@ class BallDetector:
 class BallTracker:
     """Temporal smoothing: requires ball detected in 3 of last 5 frames."""
 
-    def __init__(self, window=5, threshold=3):
+    def __init__(self, window=5, threshold=2):
         self._history = deque(maxlen=window)
         self._threshold = threshold
 
-    def update(self, landmarks, ball_boxes, frame_w, frame_h, distance_px=200):
-        raw = _check_near_hands(landmarks, ball_boxes, frame_w, frame_h, distance_px)
+    def update(self, landmarks, ball_boxes, frame_w, frame_h):
+        # Scale threshold with frame size — 200px was calibrated for 640px wide
+        threshold = int(max(frame_w, frame_h) * 0.3)
+        raw = _check_near_hands(landmarks, ball_boxes, frame_w, frame_h, threshold)
         self._history.append(raw["has_ball"])
 
         confirmed = sum(self._history) >= self._threshold

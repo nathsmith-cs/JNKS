@@ -1,8 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+// import { useState, useEffect } from "react";
+
+// Splash screen temporarily disabled — 3D ball loading issues on mobile
+// To re-enable, uncomment the original implementation below
 
 export function SplashScreen({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
+/*
+// Original splash screen implementation:
+export function SplashScreenOriginal({ children }: { children: React.ReactNode }) {
   const [visible, setVisible] = useState(true);
   const [fadeOut, setFadeOut] = useState(false);
 
@@ -34,3 +43,4 @@ export function SplashScreen({ children }: { children: React.ReactNode }) {
     </>
   );
 }
+*/
