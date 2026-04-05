@@ -128,7 +128,7 @@ PHASE_TO_CATEGORY = {
     "gather": "Stance",
 }
 
-WEIGHTS = {"Elbow Angle": 0.3, "Follow-Through": 0.25, "Release Point": 0.25, "Stance": 0.2}
+WEIGHTS = {"Elbow Angle": 0.25, "Follow-Through": 0.25, "Release Point": 0.25, "Stance": 0.25}
 
 
 def _analyze_shot(landmark_buffer, ref_path):
@@ -436,7 +436,18 @@ async def ws_analyze(ws: WebSocket):
                     global _latest_report
                     _latest_report = report
 
-                    # Send results IMMEDIATELY — don't wait for TTS
+                    # Generate TTS audio from coaching text
+                    coaching_text = report.get("coaching", "")
+                    if coaching_text:
+                        try:
+                            audio_b64 = await asyncio.wait_for(
+                                text_to_speech(coaching_text), timeout=15
+                            )
+                            if audio_b64:
+                                report["audio"] = audio_b64
+                        except Exception as e:
+                            print(f"\nTTS failed: {e}")
+
                     await ws.send_json({"type": "batch_complete", "result": report})
                     state["batch_shots"].clear()
                     state["shot_video_paths"].clear()
