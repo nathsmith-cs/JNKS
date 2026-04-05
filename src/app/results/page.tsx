@@ -57,15 +57,22 @@ export default function ResultsPage() {
         </div>
       </BlurFade>
 
-      {result.coaching && (
+      {(result.coachSummary || result.coaching) && (
         <>
           <Separator className="opacity-30" />
           <BlurFade delay={0.35} inView>
             <div className="rounded-xl border border-border bg-muted/30 p-5 space-y-2">
               <h2 className="text-lg font-semibold">Coach&apos;s Advice</h2>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                {result.coaching}
-              </p>
+              {result.coachSummary && (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {result.coachSummary}
+                </p>
+              )}
+              {result.coaching && result.coaching !== result.coachSummary && (
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {result.coaching}
+                </p>
+              )}
             </div>
           </BlurFade>
         </>

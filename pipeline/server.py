@@ -24,6 +24,14 @@ from pipeline.phases import detect_phases, compute_angle_sequence
 from pipeline.compare import find_best_match
 from pipeline.llm import analyze_shot_with_gemini, distill_advice, text_to_speech
 from pipeline.voice import create_live_session, send_audio, receive_audio
+from pipeline.video import convert_video, split_video
+from pipeline.pose_extract import extract_keypoints, keypoints_to_named
+from pipeline.gemini_vision import analyze_clip_with_gemini, build_final_analysis
+from pipeline.scoring import (
+    compute_clip_metrics,
+    summarize_session_metrics,
+    build_analysis_result,
+)
 
 app = FastAPI()
 
@@ -189,6 +197,34 @@ def _batch_report(shot_analyses):
     }
 
 
+async def _finalize_batch(ws: WebSocket, batch_shots, shot_advices):
+    """Build batch report, distill coaching, generate TTS, and send to client."""
+    report = _batch_report(batch_shots)
+
+    coaching = await distill_advice(shot_advices, report)
+    report["coaching"] = coaching
+
+    audio_b64 = await text_to_speech(coaching)
+    if audio_b64:
+        report["audio"] = audio_b64
+
+    results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
+    with open(results_path, "w") as f:
+        debug_report = {k: v for k, v in report.items() if k != "audio"}
+        json.dump(debug_report, f, indent=2)
+
+    global _latest_report
+    _latest_report = report
+
+    try:
+        await ws.send_json({
+            "type": "batch_complete",
+            "result": report,
+        })
+    except Exception:
+        pass
+
+
 def _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events):
     """Process all frames in a VideoCapture. Mutates state dict. Appends events to ws_events."""
     while cap.isOpened():
@@ -291,6 +327,7 @@ async def ws_analyze(ws: WebSocket):
         "chunk_frames": 0,
     }
     shot_advices = []
+    batch_finalizing = False  # guard against double-finalization
     chunk_count = 0
 
     try:
@@ -318,37 +355,52 @@ async def ws_analyze(ws: WebSocket):
                 ref = analysis.get("comparison", {}).get("best_ref", "unknown")
                 comp = analysis.get("comparison")
 
-                gemini_advice = await analyze_shot_with_gemini(state["landmarks"] or [], comp)
-                shot_advices.append(gemini_advice)
-
+                # Send shot detected event immediately (don't wait for Gemini)
+                shot_number = len(state["batch_shots"])
                 await ws.send_json({
                     "type": "shot_detected",
-                    "shot_number": len(state["batch_shots"]),
-                    "score": score, "best_ref": ref, "advice": gemini_advice,
-                    "shots_in_batch": len(state["batch_shots"]),
+                    "shot_number": shot_number,
+                    "score": score,
+                    "best_ref": ref,
+                    "advice": None,
+                    "shots_in_batch": shot_number,
                     "shots_needed": SHOTS_PER_BATCH,
                 })
 
-                if len(state["batch_shots"]) >= SHOTS_PER_BATCH:
-                    report = _batch_report(state["batch_shots"])
-                    coaching = await distill_advice(shot_advices, report)
-                    report["coaching"] = coaching
+                # Fire-and-forget Gemini advice so the frame loop
+                # keeps processing while LLM responds (~3-5s).
+                async def _get_advice_and_maybe_batch(
+                    lm_buf, comp_data, shot_num,
+                ):
+                    nonlocal batch_finalizing
+                    gemini_advice = await analyze_shot_with_gemini(lm_buf, comp_data)
+                    shot_advices.append(gemini_advice)
 
-                    audio_b64 = await text_to_speech(coaching)
-                    if audio_b64:
-                        report["audio"] = audio_b64
+                    # Send advice as a follow-up message
+                    try:
+                        await ws.send_json({
+                            "type": "shot_advice",
+                            "shot_number": shot_num,
+                            "advice": gemini_advice,
+                        })
+                    except Exception:
+                        pass
 
-                    results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
-                    with open(results_path, "w") as f:
-                        debug_report = {k: v for k, v in report.items() if k != "audio"}
-                        json.dump(debug_report, f, indent=2)
+                    # Check if batch is now complete (guard against double-finalize)
+                    if (
+                        not batch_finalizing
+                        and len(state["batch_shots"]) >= SHOTS_PER_BATCH
+                        and len(shot_advices) >= SHOTS_PER_BATCH
+                    ):
+                        batch_finalizing = True
+                        await _finalize_batch(ws, state["batch_shots"], shot_advices)
+                        state["batch_shots"].clear()
+                        shot_advices.clear()
+                        batch_finalizing = False
 
-                    global _latest_report
-                    _latest_report = report
-
-                    await ws.send_json({"type": "batch_complete", "result": report})
-                    state["batch_shots"] = []
-                    shot_advices = []
+                asyncio.create_task(
+                    _get_advice_and_maybe_batch(state["landmarks"] or [], comp, shot_number)
+                )
 
             print(f"\rchunk={chunk_count} frames={state['chunk_frames']} total={state['frame_number']} sf={state['shot_frames']} shots={len(state['batch_shots'])}    ", end="", flush=True)
 
@@ -415,60 +467,131 @@ async def ws_voice(ws: WebSocket):
         await gemini_ws.close()
 
 
+def _process_single_clip(idx: int, clip: str, max_clip_sec: int) -> dict:
+    """Process a single clip: pose extraction + metrics + Gemini vision.
+
+    This runs in a thread so multiple clips can be processed concurrently.
+    """
+    frames = extract_keypoints(clip)
+    metrics = compute_clip_metrics(frames)
+    feedback = analyze_clip_with_gemini(clip, metrics)
+
+    start_sec = idx * max_clip_sec
+    end_sec = start_sec + max_clip_sec
+    return {
+        "clip_index": idx,
+        "clip_path": clip,
+        "time_range": f"{start_sec:.1f}s-{end_sec:.1f}s",
+        "metrics": metrics,
+        "feedback": feedback,
+        "raw_keypoints": frames,  # kept for reference comparison (O5)
+    }
+
+
 @app.post("/api/analyze")
 async def analyze_upload(
     video: UploadFile = File(...),
     reference: str = Query(default="StephCurryShots"),
+    input_type: str = Query(default="upload"),
 ):
+    """Upload a video file for analysis.
+
+    Uses Gemini vision analysis with hybrid scoring:
+    - Video is converted to mp4, split into clips
+    - Each clip gets MediaPipe pose extraction + Gemini vision analysis
+    - Final scores blend 40% MediaPipe metrics with 60% Gemini vision scores
+
+    Optimizations applied:
+    - O1: Clips processed in parallel via asyncio.to_thread
+    - O2: ffmpeg splits launched concurrently
+    - O5: Reuses pose keypoints for reference comparison (no second video pass)
+    - O7: Smart remux for H.264 inputs
+    """
     ref_path = os.path.join(REF_DIR, reference)
     if not os.path.isdir(ref_path):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=400, content={"error": f"Reference '{reference}' not found"})
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+    suffix = os.path.splitext(video.filename or "video.mp4")[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(await video.read())
         tmp_path = tmp.name
 
     try:
-        tracker, ball_detector = _get_models()
-        state = {
-            "frame_number": 0, "shot_frames": 0, "shot_cooldown": 0,
-            "ball_boxes": [], "confirm_frames": 0, "cooldown_skip": 0,
-            "ball_lost": 0, "landmarks": [], "shot_frame_buf": [],
-            "batch_shots": [], "ball_tracker": BallTracker(),
-            "chunk_frames": 0,
-        }
-        shot_advices = []
+        # Stage 2+3: convert -> split (splits run concurrently via Popen)
+        video_path = convert_video(tmp_path)
+        clips = split_video(video_path)
+        max_clip_sec = 5
 
-        cap = cv2.VideoCapture(tmp_path)
-        ws_events = []
-        _process_frames(cap, tracker, ball_detector, state, ref_path, ws_events)
-        cap.release()
+        # Stage 4+5 (O1): Process all clips in parallel threads.
+        # Each thread does pose extraction + Gemini vision independently.
+        clip_futures = [
+            asyncio.to_thread(_process_single_clip, idx, clip, max_clip_sec)
+            for idx, clip in enumerate(clips)
+        ]
+        clip_results: list[dict] = list(await asyncio.gather(*clip_futures))
 
-        # Flush remaining
-        if state["landmarks"] and len(state["landmarks"]) >= MIN_SHOT_FRAMES:
-            analysis = _analyze_shot(state["landmarks"], ref_path)
-            state["batch_shots"].append(analysis)
+        # Sort by clip_index (gather preserves order, but be explicit)
+        clip_results.sort(key=lambda r: r["clip_index"])
 
-        for shot in state["batch_shots"]:
-            comp = shot.get("comparison")
-            advice = await analyze_shot_with_gemini([], comp)
-            shot_advices.append(advice)
+        # Stage 6+7: Final analysis and scoring
+        session_metrics = summarize_session_metrics(clip_results)
+        final_text = await asyncio.to_thread(
+            build_final_analysis, clip_results, session_metrics
+        )
+        result = build_analysis_result(final_text, session_metrics, clip_results, input_type)
 
-        report = _batch_report(state["batch_shots"])
-        coaching = await distill_advice(shot_advices, report)
-        report["coaching"] = coaching
+        # O5: Reference comparison using already-extracted keypoints
+        # (no second video pass -- convert index-based keypoints to named dicts)
+        if os.path.isdir(ref_path):
+            all_named_landmarks: list[dict | None] = []
+            for cr in clip_results:
+                all_named_landmarks.extend(keypoints_to_named(cr["raw_keypoints"]))
+
+            valid_landmarks = [lm for lm in all_named_landmarks if lm is not None]
+            if valid_landmarks:
+                match = find_best_match(valid_landmarks, ref_path)
+                if match:
+                    angle_diffs = match["analysis"].get("angle_diffs", {})
+                    worst_angles = sorted(
+                        angle_diffs.items(), key=lambda x: x[1], reverse=True
+                    )
+                    result["worstJoints"] = [
+                        {"joint": k, "avg_diff_degrees": round(v, 1)}
+                        for k, v in worst_angles[:5]
+                    ]
+
+        # Strip raw_keypoints from the response (internal use only)
+        for cr in clip_results:
+            cr.pop("raw_keypoints", None)
+
+        # Stage 9: Distill coaching advice
+        coaching = await distill_advice(
+            [r["feedback"] for r in clip_results],
+            result,
+        )
+        if coaching:
+            result["coaching"] = coaching
 
         global _latest_report
-        _latest_report = report
+        _latest_report = result
 
         results_path = os.path.join(os.path.dirname(__file__), "latest_results.json")
         with open(results_path, "w") as f:
-            json.dump(report, f, indent=2)
+            debug_report = {k: v for k, v in result.items() if k != "audio"}
+            json.dump(debug_report, f, indent=2)
 
-        return report
+        return result
+
+    except FileNotFoundError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ValueError as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=400, content={"error": str(e)})
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @app.get("/api/references")

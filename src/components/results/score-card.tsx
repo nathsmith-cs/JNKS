@@ -47,6 +47,30 @@ export function ScoreCard({ category, delay }: ScoreCardProps) {
         <p className="text-sm text-muted-foreground leading-relaxed">
           {category.tip}
         </p>
+        {category.feedback && (category.feedback.strengths.length > 0 || category.feedback.issues.length > 0) && (
+          <div className="space-y-2 pt-2 border-t border-border/30">
+            {category.feedback.strengths.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-emerald-500">Strengths</p>
+                <ul className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                  {category.feedback.strengths.map((s, i) => (
+                    <li key={i}>- {s}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {category.feedback.issues.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-amber-500">Areas to Improve</p>
+                <ul className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                  {category.feedback.issues.map((s, i) => (
+                    <li key={i}>- {s}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </MagicCard>
   );
