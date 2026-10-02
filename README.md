@@ -2,6 +2,22 @@
 
 AI-powered basketball shooting form analyzer. Record your three-point shot via webcam or upload a video, and get instant feedback comparing your form to pro players like Steph Curry and Klay Thompson.
 
+## Demo and recognition
+
+[Project story, screenshots, and demo](https://devpost.com/software/jnks)
+
+**PantherHacks 2026:** Healthcare Track Winner and Hacker's Choice Award.
+
+## Team and contributions
+
+JNKS is a team project. [Nate Smith](https://github.com/nathsmith-cs) helped build the NBA reference-comparison pipeline and collected professional-shot reference data. This work compares app-captured poses with reference shots using joint-angle differences and normalized wrist height. See the [Devpost team credits](https://devpost.com/software/jnks) for the other contributors' roles.
+
+### Reference comparison
+
+The pipeline compares shooting-side joint angles and wrist height across gather, set point, release, and follow-through. Phase sequences are resampled to compare clips of different lengths. Reference similarity uses angular and wrist-height error; the cosine operation computes individual joint angles.
+
+See [angle computation](pipeline/angles.py), [reference comparison](pipeline/compare.py), and [hybrid category scoring](pipeline/scoring.py). Scores are project heuristics, not calibrated measurements of shooting accuracy.
+
 ## How It Works
 
 1. **Record** your shot using a webcam (live analysis) or upload a video file
